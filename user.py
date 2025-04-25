@@ -23,17 +23,18 @@ from utils import (
     format_currency, get_progress_bar, send_message_with_retry, format_discount_value,
     clear_expired_basket, fetch_last_purchases, get_user_status, fetch_reviews,
     NOWPAYMENTS_API_KEY, # Check if NOWPayments is configured
-    get_db_connection, MEDIA_DIR # Import helper and MEDIA_DIR
+    get_db_connection, MEDIA_DIR, # Import helper and MEDIA_DIR
+    DEFAULT_PRODUCT_EMOJI # Import default emoji
 )
 
 # Logging setup
 logger = logging.getLogger(__name__)
 
-# Emojis (Keep as is)
+# Emojis (Defaults/Placeholders)
 EMOJI_CITY = "🏙️"
 EMOJI_DISTRICT = "🏘️"
-EMOJI_PRODUCT = "💎"
-EMOJI_HERB = "🌿"
+# EMOJI_PRODUCT = "💎" # No longer primary source
+EMOJI_HERB = "🌿" # Keep for potential specific logic if needed
 EMOJI_PRICE = "💰"
 EMOJI_QUANTITY = "🔢"
 EMOJI_BASKET = "🛒"
@@ -56,21 +57,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     is_callback = update.callback_query is not None
 
     # --- Send Bot Media ---
-    # *** FIXED: Use standard 'with' instead of 'async with' ***
     if not is_callback and BOT_MEDIA.get("type") and BOT_MEDIA.get("path"):
         media_path = BOT_MEDIA["path"]
         media_type = BOT_MEDIA["type"]
         logger.info(f"Attempting to send BOT_MEDIA: type={media_type}, path={media_path}")
         if await asyncio.to_thread(os.path.exists, media_path):
             try:
-                # Use standard 'with' for file handling
                 with open(media_path, "rb") as file_content:
                     if media_type == "photo":
                         await context.bot.send_photo(chat_id=chat_id, photo=file_content)
                     elif media_type == "video":
                         await context.bot.send_video(chat_id=chat_id, video=file_content)
                     elif media_type == "gif":
-                        # send_animation works for both actual .gif and .mp4 files representing animations
                         await context.bot.send_animation(chat_id=chat_id, animation=file_content)
                     else:
                         logger.warning(f"Unsupported BOT_MEDIA type: {media_type}")
@@ -184,7 +182,7 @@ async def handle_back_start(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     """Handles 'Back' button presses that should return to the main start menu."""
     await start(update, context)
 
-# --- Shopping Handlers (Largely unchanged, ensure price is handled as Decimal where relevant) ---
+# --- Shopping Handlers ---
 
 async def handle_shop(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays the list of cities for shopping."""
@@ -266,7 +264,7 @@ async def handle_district_selection(update: Update, context: ContextTypes.DEFAUL
 
     if not city or not district: error_district_city_not_found = lang_data.get("error_district_city_not_found", "Error: District or city not found."); await query.edit_message_text(f"❌ {error_district_city_not_found}", parse_mode=None); return await handle_shop(update, context)
 
-    theme_name = context.user_data.get("theme", "default"); theme = THEMES.get(theme_name, THEMES["default"]); product_emoji = theme.get('product', EMOJI_PRODUCT)
+    # *** NO LONGER NEEDED: theme_name = context.user_data.get("theme", "default"); theme = THEMES.get(theme_name, THEMES["default"]); product_emoji = theme.get('product', EMOJI_PRODUCT) ***
     back_districts_button = lang_data.get("back_districts_button", "Back to Districts"); home_button = lang_data.get("home_button", "Home")
     no_types_msg = lang_data.get("no_types_available", "No product types currently available here."); select_type_prompt = lang_data.get("select_type_prompt", "Select product type:")
     error_loading_types = lang_data.get("error_loading_types", "Error: Failed to Load Product Types"); error_unexpected = lang_data.get("error_unexpected", "An unexpected error occurred")
@@ -282,7 +280,11 @@ async def handle_district_selection(update: Update, context: ContextTypes.DEFAUL
             keyboard = [[InlineKeyboardButton(f"{EMOJI_BACK} {back_districts_button}", callback_data=f"city|{city_id}"), InlineKeyboardButton(f"{EMOJI_HOME} {home_button}", callback_data="back_start")]]
             await query.edit_message_text(f"{EMOJI_CITY} {city}\n{EMOJI_DISTRICT} {district}\n\n{no_types_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
         else:
-            keyboard = [[InlineKeyboardButton(f"{product_emoji} {pt}", callback_data=f"type|{city_id}|{dist_id}|{pt}")] for pt in available_types]
+            keyboard = []
+            for pt in available_types:
+                # *** CHANGE: Get emoji from global dict ***
+                emoji = PRODUCT_TYPES.get(pt, DEFAULT_PRODUCT_EMOJI)
+                keyboard.append([InlineKeyboardButton(f"{emoji} {pt}", callback_data=f"type|{city_id}|{dist_id}|{pt}")])
             keyboard.append([InlineKeyboardButton(f"{EMOJI_BACK} {back_districts_button}", callback_data=f"city|{city_id}"), InlineKeyboardButton(f"{EMOJI_HOME} {home_button}", callback_data="back_start")])
             await query.edit_message_text(f"{EMOJI_CITY} {city}\n{EMOJI_DISTRICT} {district}\n\n{select_type_prompt}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
     except sqlite3.Error as e: logger.error(f"DB error fetching product types {city}/{district}: {e}", exc_info=True); await query.edit_message_text(f"❌ {error_loading_types}", parse_mode=None)
@@ -302,7 +304,8 @@ async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TY
 
     if not city or not district: error_district_city_not_found = lang_data.get("error_district_city_not_found", "Error: District or city not found."); await query.edit_message_text(f"❌ {error_district_city_not_found}", parse_mode=None); return await handle_shop(update, context)
 
-    theme_name = context.user_data.get("theme", "default"); theme = THEMES.get(theme_name, THEMES["default"]); product_emoji = theme.get('product', EMOJI_PRODUCT)
+    # *** CHANGE: Get emoji from global dict ***
+    product_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
     back_types_button = lang_data.get("back_types_button", "Back to Types"); home_button = lang_data.get("home_button", "Home")
     no_items_of_type = lang_data.get("no_items_of_type", "No items of this type currently available here.")
     available_options_prompt = lang_data.get("available_options_prompt", "Available options:")
@@ -317,6 +320,7 @@ async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TY
 
         if not products:
             keyboard = [[InlineKeyboardButton(f"{EMOJI_BACK} {back_types_button}", callback_data=f"dist|{city_id}|{dist_id}"), InlineKeyboardButton(f"{EMOJI_HOME} {home_button}", callback_data="back_start")]]
+            # *** CHANGE: Use fetched emoji in message header ***
             await query.edit_message_text(f"{EMOJI_CITY} {city}\n{EMOJI_DISTRICT} {district}\n{product_emoji} {p_type}\n\n{no_items_of_type}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
         else:
             keyboard = []
@@ -326,11 +330,13 @@ async def handle_type_selection(update: Update, context: ContextTypes.DEFAULT_TY
                 price_str_formatted = format_currency(price)
                 # Use consistent decimal places for callback data
                 price_str_callback = f"{price:.2f}"
+                # *** CHANGE: Use fetched emoji in button ***
                 button_text = f"{product_emoji} {size} ({price_str_formatted}€) - {available_label_short}: {count}"
                 callback_data = f"product|{city_id}|{dist_id}|{p_type}|{size}|{price_str_callback}"
                 keyboard.append([InlineKeyboardButton(button_text, callback_data=callback_data)])
 
             keyboard.append([InlineKeyboardButton(f"{EMOJI_BACK} {back_types_button}", callback_data=f"dist|{city_id}|{dist_id}"), InlineKeyboardButton(f"{EMOJI_HOME} {home_button}", callback_data="back_start")])
+            # *** CHANGE: Use fetched emoji in message header ***
             await query.edit_message_text(f"{EMOJI_CITY} {city}\n{EMOJI_DISTRICT} {district}\n{product_emoji} {p_type}\n\n{available_options_prompt}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
     except sqlite3.Error as e: logger.error(f"DB error fetching products {city}/{district}/{p_type}: {e}", exc_info=True); await query.edit_message_text(f"❌ {error_loading_products}", parse_mode=None)
     except Exception as e: logger.error(f"Unexpected error in handle_type_selection: {e}", exc_info=True); await query.edit_message_text(f"❌ {error_unexpected}", parse_mode=None)
@@ -352,7 +358,9 @@ async def handle_product_selection(update: Update, context: ContextTypes.DEFAULT
     city = CITIES.get(city_id); district = DISTRICTS.get(city_id, {}).get(dist_id)
     if not city or not district: error_location_mismatch = lang_data.get("error_location_mismatch", "Error: Location data mismatch."); await query.edit_message_text(f"❌ {error_location_mismatch}", parse_mode=None); return await handle_shop(update, context)
 
-    theme_name = context.user_data.get("theme", "default"); theme = THEMES.get(theme_name, THEMES["default"]); product_emoji = theme.get('product', EMOJI_PRODUCT); basket_emoji = theme.get('basket', EMOJI_BASKET)
+    # *** CHANGE: Get emoji from global dict ***
+    product_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
+    basket_emoji = theme.get('basket', EMOJI_BASKET) # Still use theme for basket
     price_label = lang_data.get("price_label", "Price"); available_label_long = lang_data.get("available_label_long", "Available")
     back_options_button = lang_data.get("back_options_button", "Back to Options"); home_button = lang_data.get("home_button", "Home")
     drop_unavailable_msg = lang_data.get("drop_unavailable", "Drop Unavailable! This option just sold out or was reserved.")
@@ -372,6 +380,7 @@ async def handle_product_selection(update: Update, context: ContextTypes.DEFAULT
             await query.edit_message_text(f"❌ {drop_unavailable_msg}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
         else:
             price_formatted = format_currency(price)  # Format Decimal price
+            # *** CHANGE: Use fetched emoji in message ***
             msg = (f"{EMOJI_CITY} {city} | {EMOJI_DISTRICT} {district}\n"
                    f"{product_emoji} {p_type} - {size}\n"
                    f"{EMOJI_PRICE} {price_label}: {price_formatted} EUR\n"
@@ -404,8 +413,10 @@ async def handle_add_to_basket(update: Update, context: ContextTypes.DEFAULT_TYP
     if not city or not district: error_location_mismatch = lang_data.get("error_location_mismatch", "Error: Location data mismatch."); await query.edit_message_text(f"❌ {error_location_mismatch}", parse_mode=None); return await handle_shop(update, context)
 
     user_id = query.from_user.id
+    # *** CHANGE: Get specific product emoji and basket emoji ***
+    product_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
     theme_name = context.user_data.get("theme", "default"); theme = THEMES.get(theme_name, THEMES["default"])
-    product_emoji = theme.get('product', EMOJI_PRODUCT); basket_emoji = theme.get('basket', EMOJI_BASKET)
+    basket_emoji = theme.get('basket', EMOJI_BASKET)
     product_id_reserved = None; conn = None
 
     back_options_button = lang_data.get("back_options_button", "Back to Options"); home_button = lang_data.get("home_button", "Home")
@@ -416,7 +427,6 @@ async def handle_add_to_basket(update: Update, context: ContextTypes.DEFAULT_TYP
     error_adding_db = lang_data.get("error_adding_db", "Error: Database issue adding item."); error_adding_unexpected = lang_data.get("error_adding_unexpected", "Error: An unexpected issue occurred.")
     added_msg_template = lang_data.get("added_to_basket", "✅ Item Reserved!\n\n{item} is in your basket for {timeout} minutes! ⏳")
     pay_msg_template = lang_data.get("pay", "💳 Total to Pay: {amount} EUR")
-    # *** FIXED: Added text for discount button ***
     apply_discount_button_text = lang_data.get("apply_discount_button", "Apply Discount Code")
 
     try:
@@ -469,16 +479,17 @@ async def handle_add_to_basket(update: Update, context: ContextTypes.DEFAULT_TYP
              pay_msg_str = f"~{original_total_str} EUR~ - {discount_amount_str} EUR Discount\n{pay_msg_str}"
 
         item_price_str = format_currency(price)  # Format Decimal price
+        # *** CHANGE: Use fetched emoji in item description ***
         item_desc = f"{product_emoji} {p_type} {size} ({item_price_str}€)"
         expiry_dt = datetime.fromtimestamp(timestamp + BASKET_TIMEOUT); expiry_time_str = expiry_dt.strftime('%H:%M:%S')
         reserved_msg = (added_msg_template.format(timeout=timeout_minutes, item=item_desc) + "\n\n" + f"⏳ {expires_label}: {expiry_time_str}\n\n" + f"{pay_msg_str}")
         district_btn_text = district[:15]
 
-        # *** FIXED: Included Apply Discount button in the keyboard after adding item ***
+        # *** Included Apply Discount button in the keyboard after adding item ***
         keyboard = [
             [InlineKeyboardButton(f"💳 {pay_now_button_text}", callback_data="confirm_pay"), InlineKeyboardButton(f"{EMOJI_REFILL} {top_up_button_text}", callback_data="refill")],
             [InlineKeyboardButton(f"{basket_emoji} {view_basket_button_text} ({len(current_basket_list)})", callback_data="view_basket"), InlineKeyboardButton(f"{basket_emoji} {clear_basket_button_text}", callback_data="clear_basket")],
-            [InlineKeyboardButton(f"{EMOJI_DISCOUNT} {apply_discount_button_text}", callback_data="apply_discount_start")], # <-- FIXED: Apply Discount button here
+            [InlineKeyboardButton(f"{EMOJI_DISCOUNT} {apply_discount_button_text}", callback_data="apply_discount_start")],
             [InlineKeyboardButton(f"➕ {shop_more_button_text} ({district_btn_text})", callback_data=f"dist|{city_id}|{dist_id}")],
             [InlineKeyboardButton(f"{EMOJI_BACK} {back_options_button}", callback_data=f"type|{city_id}|{dist_id}|{p_type}"), InlineKeyboardButton(f"{EMOJI_HOME} {home_button}", callback_data="back_start")]
         ]
@@ -658,11 +669,15 @@ async def handle_view_basket(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 price = Decimal(str(details['price']))  # Ensure DB price is Decimal
 
             timestamp = item['timestamp']
-            item_desc = f"{details['product_type']} {details['size']}"
+            # *** CHANGE: Use fetched emoji in item description ***
+            product_type_name = details['product_type']
+            product_emoji = PRODUCT_TYPES.get(product_type_name, DEFAULT_PRODUCT_EMOJI)
+            item_desc = f"{product_emoji} {product_type_name} {details['size']}"
             item_price = format_currency(price)  # Format Decimal price
             remaining_time = max(0, int(BASKET_TIMEOUT - (time.time() - timestamp)))
             time_str = f"{remaining_time // 60} min {remaining_time % 60} sec"
             msg += (f"{items_to_display_count + 1}. {item_desc} ({item_price}€)\n" f"   ⏳ {expires_in_label}: {time_str}\n")
+            # Also update remove button text to use the potentially updated item_desc
             remove_button_text = f"🗑️ {remove_button_label} {item_desc}"[:60]
             keyboard_items.append([InlineKeyboardButton(remove_button_text, callback_data=f"remove|{prod_id}")])
             original_total += price  # Add Decimal prices
@@ -1037,9 +1052,11 @@ async def handle_price_list_city(update: Update, context: ContextTypes.DEFAULT_T
 
             for p_type in sorted(grouped_data.keys()):
                 type_data = grouped_data[p_type]; sorted_price_size = sorted(type_data.keys(), key=lambda x: (x[0], x[1]))
+                # *** CHANGE: Use fetched emoji ***
+                prod_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
                 for price, size in sorted_price_size:
                     districts_list = type_data[(price, size)]; price_str = format_currency(price)  # Format Decimal
-                    prod_emoji = EMOJI_HERB if 'herb' in p_type.lower() else EMOJI_PRODUCT
+                    # *** CHANGE: Use fetched emoji (already got it above loop) ***
                     msg += f"\n{prod_emoji} {p_type} {size} ({price_str}€)\n"
                     districts_list.sort(key=lambda x: x[0])
                     for district, quantity in districts_list: msg += f"  • {EMOJI_DISTRICT} {district}: {quantity} {available_label}\n"
@@ -1087,7 +1104,6 @@ async def handle_reviews_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
         [InlineKeyboardButton(f"{EMOJI_HOME} {home_button}", callback_data="back_start")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    # Corrected: Await the edit_message_text call
     await query.edit_message_text(review_prompt, reply_markup=reply_markup, parse_mode=None)
 
 
