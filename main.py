@@ -58,6 +58,7 @@ from admin import (
     handle_adm_remove_district, handle_adm_manage_products, handle_adm_manage_products_city,
     handle_adm_manage_products_dist, handle_adm_manage_products_type, handle_adm_delete_prod,
     handle_adm_manage_types, handle_adm_add_type, handle_adm_delete_type,
+    handle_adm_edit_type_menu, handle_adm_change_type_emoji, # <-- Import new type edit handlers
     handle_adm_manage_discounts, handle_adm_toggle_discount, handle_adm_delete_discount,
     handle_adm_add_discount_start, handle_adm_use_generated_code, handle_adm_set_discount_type,
     handle_adm_set_media,
@@ -68,6 +69,8 @@ from admin import (
     handle_adm_add_district_message, handle_adm_edit_district_message,
     handle_adm_edit_city_message, handle_adm_custom_size_message, handle_adm_price_message,
     handle_adm_drop_details_message, handle_adm_bot_media_message, handle_adm_add_type_message,
+    handle_adm_add_type_emoji_message, # <-- Import new type emoji handler
+    handle_adm_edit_type_emoji_message, # <-- Import new type emoji edit handler
     process_discount_code_input, handle_adm_discount_code_message, handle_adm_discount_value_message,
     handle_adm_manage_reviews, handle_adm_delete_review_confirm
 )
@@ -143,7 +146,10 @@ def callback_query_router(func):
                 "adm_manage_products": handle_adm_manage_products, "adm_manage_products_city": handle_adm_manage_products_city,
                 "adm_manage_products_dist": handle_adm_manage_products_dist, "adm_manage_products_type": handle_adm_manage_products_type,
                 "adm_delete_prod": handle_adm_delete_prod,
-                "adm_manage_types": handle_adm_manage_types, "adm_add_type": handle_adm_add_type,
+                "adm_manage_types": handle_adm_manage_types,
+                "adm_edit_type_menu": handle_adm_edit_type_menu, # <-- NEW
+                "adm_change_type_emoji": handle_adm_change_type_emoji, # <-- NEW
+                "adm_add_type": handle_adm_add_type,
                 "adm_delete_type": handle_adm_delete_type,
                 "adm_manage_discounts": handle_adm_manage_discounts, "adm_toggle_discount": handle_adm_toggle_discount,
                 "adm_delete_discount": handle_adm_delete_discount, "adm_add_discount_start": handle_adm_add_discount_start,
@@ -200,7 +206,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'awaiting_edit_city_name': handle_adm_edit_city_message,
         'awaiting_new_district_name': handle_adm_add_district_message,
         'awaiting_edit_district_name': handle_adm_edit_district_message,
-        'awaiting_new_type_name': handle_adm_add_type_message,
+        'awaiting_new_type_name': handle_adm_add_type_message, # Handles name input
+        # *** ADDED EMOJI STATE HANDLERS ***
+        'awaiting_new_type_emoji': handle_adm_add_type_emoji_message, # Handles emoji input for new type
+        'awaiting_edit_type_emoji': handle_adm_edit_type_emoji_message, # Handles emoji input for editing type
+        # *********************************
         'awaiting_custom_size': handle_adm_custom_size_message,
         'awaiting_price': handle_adm_price_message,
         'awaiting_drop_details': handle_adm_drop_details_message, # This now handles single/group media
