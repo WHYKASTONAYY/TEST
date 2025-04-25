@@ -334,7 +334,7 @@ SIZES = ["2g", "5g"]
 BOT_MEDIA = {'type': None, 'path': None}
 currency_price_cache = {} # Simple in-memory cache for CoinGecko prices
 min_amount_cache = {} # Simple in-memory cache for NOWPayments minimum amounts
-CACHE_EXPIRY_SECONDS = 900 # Cache prices/minimums for 15 minutes (Increased from 300)
+CACHE_EXPIRY_SECONDS = 7000 # Cache prices/minimums for 15 minutes (Increased from 300)
 
 
 # --- Database Connection Helper ---
