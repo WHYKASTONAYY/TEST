@@ -358,9 +358,14 @@ async def handle_product_selection(update: Update, context: ContextTypes.DEFAULT
     city = CITIES.get(city_id); district = DISTRICTS.get(city_id, {}).get(dist_id)
     if not city or not district: error_location_mismatch = lang_data.get("error_location_mismatch", "Error: Location data mismatch."); await query.edit_message_text(f"❌ {error_location_mismatch}", parse_mode=None); return await handle_shop(update, context)
 
-    # *** CHANGE: Get emoji from global dict ***
+    # *** CHANGE: Get product emoji AND theme/basket emoji ***
     product_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
-    basket_emoji = theme.get('basket', EMOJI_BASKET) # Still use theme for basket
+    # *** ADDED THESE TWO LINES: ***
+    theme_name = context.user_data.get("theme", "default")
+    theme = THEMES.get(theme_name, THEMES["default"])
+    # ***************************
+    basket_emoji = theme.get('basket', EMOJI_BASKET)
+
     price_label = lang_data.get("price_label", "Price"); available_label_long = lang_data.get("available_label_long", "Available")
     back_options_button = lang_data.get("back_options_button", "Back to Options"); home_button = lang_data.get("home_button", "Home")
     drop_unavailable_msg = lang_data.get("drop_unavailable", "Drop Unavailable! This option just sold out or was reserved.")
