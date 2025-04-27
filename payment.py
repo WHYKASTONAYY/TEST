@@ -5,7 +5,7 @@ import sqlite3
 import time
 import os # Added import
 import shutil # Added import
-import asyncio
+import asyncio # Added import
 import uuid # For generating unique order IDs
 import requests # For making API calls to NOWPayments
 from decimal import Decimal, ROUND_UP, ROUND_DOWN # Use Decimal for precision
@@ -30,7 +30,7 @@ from utils import (
     format_expiration_time, FEE_ADJUSTMENT,
     add_pending_deposit, remove_pending_deposit, # Make sure add_pending_deposit is imported
     get_nowpayments_min_amount,
-    get_db_connection, MEDIA_DIR,
+    get_db_connection, MEDIA_DIR, # Import helpers/paths
     clear_expired_basket # <<<--- FIXED: Added import
 )
 import user # Added import
@@ -306,6 +306,7 @@ async def display_nowpayments_invoice(update: Update, context: ContextTypes.DEFA
         pay_currency = payment_data.get('pay_currency', 'N/A').upper()
         payment_id = payment_data.get('payment_id', 'N/A')
         target_eur_orig = payment_data.get('target_eur_amount_orig')
+        expiration_estimate_date_str = payment_data.get('expiration_estimate_date') # Get expiration
 
         if not pay_address or not pay_amount_str:
             logger.error(f"Missing critical data in NOWPayments response for display: {payment_data}")
@@ -314,10 +315,12 @@ async def display_nowpayments_invoice(update: Update, context: ContextTypes.DEFA
         pay_amount_decimal = Decimal(pay_amount_str)
         pay_amount_display = '{:f}'.format(pay_amount_decimal.normalize())
         target_eur_display = format_currency(Decimal(str(target_eur_orig))) if target_eur_orig else "N/A"
+        expiry_time_display = format_expiration_time(expiration_estimate_date_str) # Format expiry
 
         invoice_title_refill = lang_data.get("invoice_title_refill", "*Top\\-Up Invoice Created*")
         amount_label = lang_data.get("amount_label", "*Amount:*")
         payment_address_label = lang_data.get("payment_address_label", "*Payment Address:*")
+        expires_at_label = lang_data.get("expires_at_label", "*Expires At:*") # Get translation
         send_warning_template = lang_data.get("send_warning_template", "⚠️ *Important:* Send *exactly* this amount of {asset} to this address\\.")
         overpayment_note = lang_data.get("overpayment_note", "ℹ️ _Sending more than this amount is okay\\! Your balance will be credited based on the amount received after network confirmation\\._")
         back_to_profile_button = lang_data.get("back_profile_button", "Back to Profile")
@@ -326,6 +329,7 @@ async def display_nowpayments_invoice(update: Update, context: ContextTypes.DEFA
         escaped_pay_amount = helpers.escape_markdown(pay_amount_display, version=2)
         escaped_currency = helpers.escape_markdown(pay_currency, version=2)
         escaped_address = helpers.escape_markdown(pay_address, version=2)
+        escaped_expiry = helpers.escape_markdown(expiry_time_display, version=2)
 
         msg = f"""{invoice_title_refill}
 
@@ -338,6 +342,8 @@ Please send the following amount:
 
 {payment_address_label}
 `{escaped_address}`
+
+{expires_at_label} {escaped_expiry}
 
 {send_warning_template.format(asset=escaped_currency)}
 
@@ -445,6 +451,7 @@ async def process_successful_refill(user_id: int, amount_to_add_eur: Decimal, pa
 
 
 # --- Process Purchase with Balance ---
+# *** THIS IS THE CORRECTED FUNCTION ***
 async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal, basket_snapshot: list, discount_code_used: str | None, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Handles DB updates when paying with internal balance."""
     chat_id = context._chat_id or context._user_id or user_id
@@ -530,7 +537,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                 c_media = conn_media.cursor()
                 media_placeholders = ','.join('?' * len(processed_product_ids))
                 c_media.execute(f"SELECT product_id, media_type, telegram_file_id, file_path FROM product_media WHERE product_id IN ({media_placeholders})", processed_product_ids)
-                for row in c_media.fetchall(): media_details[row['product_id']].append(dict(row))
+                for row in c_media.fetchall(): media_details[row['product_id']].append(dict(row)) # <-- Fetches media info
             except sqlite3.Error as e: logger.error(f"DB error fetching media: {e}")
             finally:
                 if conn_media: conn_media.close()
@@ -538,6 +545,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
             success_title = lang_data.get("purchase_success", "🎉 Purchase Complete! Pickup details below:")
             await send_message_with_retry(context.bot, chat_id, success_title, parse_mode=None)
 
+            # --- Loop through purchased products to send details ---
             for prod_id in processed_product_ids:
                 item_details = final_pickup_details.get(prod_id)
                 if not item_details: continue
@@ -547,86 +555,111 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
 
                 media_sent = False
                 caption_sent_with_media = False
-                opened_files = []
+                opened_files = [] # <-- Files opened for sending
 
+                # --- Check if media exists for this product ---
                 if prod_id in media_details:
                     media_list = media_details[prod_id]
                     if media_list:
                         media_group_to_send = []
+                        # --- Prepare caption ---
                         combined_caption = f"{item_header}\n\n{item_text}"
                         if len(combined_caption) > 1024:
-                            combined_caption = combined_caption[:1021] + "..."
+                            combined_caption = combined_caption[:1021] + "..." # Truncate caption if too long
                             logger.warning(f"Combined caption for P{prod_id} truncated to 1024 chars.")
 
-                        try:
+                        # --- Prepare media items for the group ---
+                        try: # Outer try for preparing the whole group
                             for i, media_item in enumerate(media_list):
                                 file_id = media_item.get('telegram_file_id')
                                 media_type = media_item.get('media_type')
-                                file_path = media_item.get('file_path')
-                                caption_to_use = combined_caption if i == 0 else None
+                                file_path = media_item.get('file_path') # Path on Render disk
+                                caption_to_use = combined_caption if i == 0 else None # Caption only on first item
                                 input_media = None
                                 file_handle = None
 
-                                try:
+                                try: # Inner try for preparing a single media item
+                                    # --- Prioritize file_id if available ---
                                     if file_id:
                                         if media_type == 'photo': input_media = InputMediaPhoto(media=file_id, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'video': input_media = InputMediaVideo(media=file_id, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'gif': input_media = InputMediaAnimation(media=file_id, caption=caption_to_use, parse_mode=None)
                                         else: logger.warning(f"Unsupported media type '{media_type}' with file_id P{prod_id}"); continue
-                                    elif file_path and await asyncio.to_thread(os.path.exists, file_path):
+                                    # --- Fallback to file_path if file_id is missing AND file exists ---
+                                    elif file_path and await asyncio.to_thread(os.path.exists, file_path): # <--- *** CHECK IF FILE EXISTS ***
                                         logger.info(f"Opening media file {file_path} P{prod_id} for sending")
-                                        file_handle = await asyncio.to_thread(open, file_path, 'rb')
-                                        opened_files.append(file_handle)
+                                        # Use asyncio.to_thread for blocking file I/O
+                                        file_handle = await asyncio.to_thread(open, file_path, 'rb') # <--- *** OPEN FILE ASYNC ***
+                                        opened_files.append(file_handle) # Keep track to close later
                                         if media_type == 'photo': input_media = InputMediaPhoto(media=file_handle, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'video': input_media = InputMediaVideo(media=file_handle, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'gif': input_media = InputMediaAnimation(media=file_handle, caption=caption_to_use, parse_mode=None)
                                         else:
                                             logger.warning(f"Unsupported media type '{media_type}' from path {file_path}")
-                                            await asyncio.to_thread(file_handle.close)
+                                            # Clean up if we skip this item
+                                            await asyncio.to_thread(file_handle.close) # <--- *** CLOSE FILE ASYNC ***
                                             opened_files.remove(file_handle)
                                             continue
-                                    else: logger.warning(f"Media item invalid P{prod_id}: No file_id and path '{file_path}' missing."); continue
+                                    else: # Neither file_id nor valid file_path
+                                        logger.warning(f"Media item invalid P{prod_id}: No file_id and path '{file_path}' missing or inaccessible."); continue
 
                                     if input_media: media_group_to_send.append(input_media)
 
-                                except Exception as prep_e:
+                                except Exception as prep_e: # Error preparing one item
                                     logger.error(f"Error preparing media item {i+1} P{prod_id}: {prep_e}", exc_info=True)
+                                    # Clean up file handle if opened during failed preparation
                                     if file_handle and file_handle in opened_files:
-                                        await asyncio.to_thread(file_handle.close)
+                                        await asyncio.to_thread(file_handle.close) # <--- *** CLOSE FILE ASYNC ***
                                         opened_files.remove(file_handle)
 
+                            # --- Send the prepared media group ---
                             if media_group_to_send:
+                                # Make sure we don't exceed Telegram's limit (usually 10)
+                                if len(media_group_to_send) > 10:
+                                    logger.warning(f"Media group for P{prod_id} exceeds 10 items ({len(media_group_to_send)}). Sending only the first 10.")
+                                    media_group_to_send = media_group_to_send[:10]
+
                                 await context.bot.send_media_group(chat_id, media=media_group_to_send, connect_timeout=20, read_timeout=20)
                                 logger.info(f"Sent media group with {len(media_group_to_send)} items for P{prod_id} to user {user_id}.")
                                 media_sent = True
-                                if media_group_to_send[0].caption:
-                                    caption_sent_with_media = True
+                                # Check if the first item (which should have the caption) exists and has a caption
+                                if media_group_to_send and media_group_to_send[0].caption:
+                                    caption_sent_with_media = True # Assume caption sent successfully with media
 
                         except telegram_error.TelegramError as tg_err:
                             logger.error(f"TelegramError sending media group for P{prod_id} to user {user_id}: {tg_err}")
+                            # If sending failed, the caption was definitely not sent with media
                             if media_group_to_send and media_group_to_send[0].caption:
                                  caption_sent_with_media = False
-                        except Exception as e:
+                        except Exception as e: # Catch other errors during sending
                             logger.error(f"Unexpected error sending media group for P{prod_id} user {user_id}: {e}", exc_info=True)
+                            # If sending failed, the caption was definitely not sent with media
                             if media_group_to_send and media_group_to_send[0].caption:
                                  caption_sent_with_media = False
                         finally:
-                             # Ensure all opened files are closed
+                            # Ensure all opened files are closed *after* attempting to send
                             for f in opened_files:
                                 try:
                                     if not f.closed:
-                                        await asyncio.to_thread(f.close)
+                                        await asyncio.to_thread(f.close) # <--- *** CLOSE FILE ASYNC ***
                                         logger.debug(f"Closed file handle during cleanup: {getattr(f, 'name', 'unknown')}")
                                 except Exception as close_e:
                                     logger.warning(f"Error closing file handle '{getattr(f, 'name', 'unknown')}' during cleanup: {close_e}")
 
-                # Send Text Details ONLY if no media was sent OR if the caption wasn't successfully sent
+                # --- Fallback: Send Text ONLY if no media OR caption failed ---
+                # If media was sent BUT the caption failed (e.g., send_media_group error),
+                # we still need to send the text details.
                 if not media_sent or not caption_sent_with_media:
+                    # If media *was* sent but caption failed, just send the item_text.
+                    # If media was *not* sent, send header + item_text.
                     text_to_send = item_text if media_sent else f"{item_header}\n\n{item_text}"
+                    # Ensure some text is sent even if original_text was empty
                     if not text_to_send: text_to_send = f"(No details for {item_name} {item_size})"
+                    logger.info(f"Sending fallback text for P{prod_id} to user {user_id}. Media sent: {media_sent}, Caption sent: {caption_sent_with_media}")
                     await send_message_with_retry(context.bot, chat_id, text_to_send, parse_mode=None)
 
-                # Delete Product Record and Media Directory
+                # --- Delete Product Record and Media Directory ---
+                # (This logic runs *after* attempting to send details)
                 conn_del = None
                 try:
                     conn_del = get_db_connection()
@@ -638,6 +671,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                         logger.info(f"Successfully deleted purchased product record ID {prod_id}.")
                         media_dir_to_delete = os.path.join(MEDIA_DIR, str(prod_id))
                         if await asyncio.to_thread(os.path.exists, media_dir_to_delete):
+                            # Run the deletion in a separate task to avoid blocking
                             asyncio.create_task(asyncio.to_thread(shutil.rmtree, media_dir_to_delete, ignore_errors=True))
                             logger.info(f"Scheduled deletion of media dir: {media_dir_to_delete}")
                     else: logger.warning(f"Product record ID {prod_id} not found for deletion.")
@@ -664,7 +698,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
         return False
 
 
-# --- Confirm Pay Handler (Simplified version without outer try/except/finally) ---
+# --- Confirm Pay Handler ---
 async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles the 'Pay Now' button press from the basket."""
     query = update.callback_query
@@ -777,10 +811,13 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
             else: await send_message_with_retry(context.bot, chat_id, "⏳ Processing payment with balance...", parse_mode=None)
         except telegram_error.BadRequest: await query.answer("Processing...")
 
+        # *** CALL THE CORRECTED FUNCTION ***
         success = await process_purchase_with_balance(user_id, final_total, valid_basket_items_snapshot, discount_code_to_use, context)
+        # ***********************************
 
         if success:
             try:
+                 # Clear the "Processing..." message after success
                  if query.message: await query.edit_message_text("✅ Purchase successful! Details sent.", reply_markup=None, parse_mode=None)
             except telegram_error.BadRequest: pass # Ignore edit error after success
         else:
