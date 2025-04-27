@@ -72,7 +72,7 @@ from admin import (
     handle_adm_set_media,
     handle_adm_broadcast_start, handle_cancel_broadcast,
     handle_confirm_broadcast, handle_adm_broadcast_message,
-    # --- NEW Broadcast Handlers ---
+    # --- Broadcast Handlers ---
     handle_adm_broadcast_target_type, handle_adm_broadcast_target_city, handle_adm_broadcast_target_status,
     handle_adm_broadcast_inactive_days_message, # Message handler
     # ----------------------------
@@ -89,7 +89,15 @@ from admin import (
 from viewer_admin import (
     handle_viewer_admin_menu,
     handle_viewer_added_products,
-    handle_viewer_view_product_media
+    handle_viewer_view_product_media,
+    # --- User Management Handlers (Imported from viewer_admin.py) ---
+    handle_manage_users_start,
+    handle_view_user_profile,
+    handle_adjust_balance_start,
+    handle_toggle_ban_user,
+    handle_adjust_balance_amount_message, # Message handler
+    handle_adjust_balance_reason_message # Message handler
+    # ---------------------------------------------------------------
 )
 # Import payment module for processing refill
 import payment # Changed from specific imports to module import
@@ -159,8 +167,8 @@ def callback_query_router(func):
                 "adm_manage_products_dist": handle_adm_manage_products_dist, "adm_manage_products_type": handle_adm_manage_products_type,
                 "adm_delete_prod": handle_adm_delete_prod,
                 "adm_manage_types": handle_adm_manage_types,
-                "adm_edit_type_menu": handle_adm_edit_type_menu, # <-- NEW
-                "adm_change_type_emoji": handle_adm_change_type_emoji, # <-- NEW
+                "adm_edit_type_menu": handle_adm_edit_type_menu,
+                "adm_change_type_emoji": handle_adm_change_type_emoji,
                 "adm_add_type": handle_adm_add_type,
                 "adm_delete_type": handle_adm_delete_type,
                 "adm_manage_discounts": handle_adm_manage_discounts, "adm_toggle_discount": handle_adm_toggle_discount,
@@ -170,14 +178,20 @@ def callback_query_router(func):
                 "confirm_yes": handle_confirm_yes,
                 # --- Broadcast Handlers ---
                 "adm_broadcast_start": handle_adm_broadcast_start,
-                "adm_broadcast_target_type": handle_adm_broadcast_target_type, # <-- NEW
-                "adm_broadcast_target_city": handle_adm_broadcast_target_city, # <-- NEW
-                "adm_broadcast_target_status": handle_adm_broadcast_target_status, # <-- NEW
+                "adm_broadcast_target_type": handle_adm_broadcast_target_type,
+                "adm_broadcast_target_city": handle_adm_broadcast_target_city,
+                "adm_broadcast_target_status": handle_adm_broadcast_target_status,
                 "cancel_broadcast": handle_cancel_broadcast,
                 "confirm_broadcast": handle_confirm_broadcast,
                 # --------------------------
                 "adm_manage_reviews": handle_adm_manage_reviews,
                 "adm_delete_review_confirm": handle_adm_delete_review_confirm,
+                # --- User Management Callbacks ---
+                "adm_manage_users": handle_manage_users_start, # Entry point (pagination)
+                "adm_view_user": handle_view_user_profile, # View specific user
+                "adm_adjust_balance_start": handle_adjust_balance_start, # Start balance adj.
+                "adm_toggle_ban": handle_toggle_ban_user, # Ban/unban user
+                # -----------------------------------
                 # Stock Handler
                 "view_stock": handle_view_stock,
                 # Viewer Admin Handlers
@@ -224,23 +238,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         'awaiting_edit_city_name': handle_adm_edit_city_message,
         'awaiting_new_district_name': handle_adm_add_district_message,
         'awaiting_edit_district_name': handle_adm_edit_district_message,
-        'awaiting_new_type_name': handle_adm_add_type_message, # Handles name input
-        # *** ADDED EMOJI STATE HANDLERS ***
-        'awaiting_new_type_emoji': handle_adm_add_type_emoji_message, # Handles emoji input for new type
-        'awaiting_edit_type_emoji': handle_adm_edit_type_emoji_message, # Handles emoji input for editing type
-        # *********************************
+        'awaiting_new_type_name': handle_adm_add_type_message,
+        'awaiting_new_type_emoji': handle_adm_add_type_emoji_message,
+        'awaiting_edit_type_emoji': handle_adm_edit_type_emoji_message,
         'awaiting_custom_size': handle_adm_custom_size_message,
         'awaiting_price': handle_adm_price_message,
-        'awaiting_drop_details': handle_adm_drop_details_message, # This now handles single/group media
+        'awaiting_drop_details': handle_adm_drop_details_message,
         'awaiting_bot_media': handle_adm_bot_media_message,
         # --- Broadcast Handlers ---
-        'awaiting_broadcast_inactive_days': handle_adm_broadcast_inactive_days_message, # <-- NEW
-        'awaiting_broadcast_message': handle_adm_broadcast_message, # Handles the actual message content
+        'awaiting_broadcast_inactive_days': handle_adm_broadcast_inactive_days_message,
+        'awaiting_broadcast_message': handle_adm_broadcast_message,
         # --------------------------
         'awaiting_discount_code': handle_adm_discount_code_message,
         'awaiting_discount_value': handle_adm_discount_value_message,
+        # --- Refill ---
         'awaiting_refill_amount': handle_refill_amount_message,
-        'awaiting_refill_crypto_choice': None, # State handled by callback (handle_select_refill_crypto)
+        'awaiting_refill_crypto_choice': None, # Handled by callback
+        # --- User Management States ---
+        'awaiting_balance_adjustment_amount': handle_adjust_balance_amount_message,
+        'awaiting_balance_adjustment_reason': handle_adjust_balance_reason_message,
+        # ----------------------------
     }
 
     handler_func = STATE_HANDLERS.get(state)
@@ -249,6 +266,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Ensure the queue is passed if necessary (though it's available via context.job_queue)
         await handler_func(update, context)
     else:
+        # Check if user is banned before processing other messages
+        if state is None: # Only check if not in a specific state
+            conn = None
+            is_banned = False
+            try:
+                conn = get_db_connection()
+                c = conn.cursor()
+                c.execute("SELECT is_banned FROM users WHERE user_id = ?", (user_id,))
+                res = c.fetchone()
+                if res and res['is_banned'] == 1:
+                    is_banned = True
+            except sqlite3.Error as e:
+                logger.error(f"DB error checking ban status for user {user_id}: {e}")
+            finally:
+                if conn: conn.close()
+
+            if is_banned:
+                logger.info(f"Ignoring message from banned user {user_id}.")
+                return # Don't process commands/messages from banned users
+
         logger.debug(f"Ignoring message from user {user_id} in state: {state}")
 
 # --- Error Handler ---
