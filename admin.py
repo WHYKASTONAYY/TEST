@@ -32,18 +32,37 @@ from utils import (
     SECONDARY_ADMIN_IDS,
     get_db_connection, MEDIA_DIR, BOT_MEDIA_JSON_PATH, # Import helpers/paths
     DEFAULT_PRODUCT_EMOJI, # Import default emoji
-    fetch_user_ids_for_broadcast # <-- IMPORT the new function
+    fetch_user_ids_for_broadcast # <-- Import broadcast user fetch function
 )
-# Import viewer admin handlers
-try: from viewer_admin import handle_viewer_admin_menu
+# --- Import viewer admin handlers ---
+# These now include the user management handlers
+try:
+    from viewer_admin import (
+        handle_viewer_admin_menu,
+        handle_manage_users_start, # <-- Needed for the new button
+        # Import other viewer handlers if needed elsewhere in admin.py
+        handle_viewer_added_products,
+        handle_viewer_view_product_media
+    )
 except ImportError:
     logger_dummy = logging.getLogger(__name__ + "_dummy_viewer")
-    logger_dummy.error("Could not import handle_viewer_admin_menu from viewer_admin.py.")
+    logger_dummy.error("Could not import handlers from viewer_admin.py.")
+    # Define dummy handlers for viewer admin menu and user management if import fails
     async def handle_viewer_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
-        query = update.callback_query # Corrected variable name
+        query = update.callback_query
         msg = "Secondary admin menu handler not found."
         if query: await query.edit_message_text(msg, parse_mode=None)
         else: await send_message_with_retry(context.bot, update.effective_chat.id, msg, parse_mode=None)
+    async def handle_manage_users_start(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
+        query = update.callback_query
+        msg = "Manage Users handler not found."
+        if query: await query.edit_message_text(msg, parse_mode=None)
+        else: await send_message_with_retry(context.bot, update.effective_chat.id, msg, parse_mode=None)
+    # Add dummies for other viewer handlers if they were used directly in admin.py
+    async def handle_viewer_added_products(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None): pass
+    async def handle_viewer_view_product_media(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None): pass
+# ------------------------------------
+
 # Import stock handler
 try: from stock import handle_view_stock
 except ImportError:
@@ -152,7 +171,6 @@ async def _prepare_and_confirm_drop(
     city_name = user_data['admin_city']
     dist_name = user_data['admin_district']
     type_name = user_data['admin_product_type']
-    # *** CHANGE: Get emoji for the type ***
     type_emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI)
     size_name = user_data['pending_drop_size']
     price_str = format_currency(user_data['pending_drop_price'])
@@ -163,11 +181,10 @@ async def _prepare_and_confirm_drop(
     media_status = f"{media_count}/{total_submitted_media} Downloaded" if total_submitted_media > 0 else "No"
     if download_errors > 0: media_status += " (Errors)"
 
-    # *** CHANGE: Use type_emoji in message ***
     msg = (f"📦 Confirm New Drop\n\n🏙️ City: {city_name}\n🏘️ District: {dist_name}\n{type_emoji} Type: {type_name}\n"
            f"📏 Size: {size_name}\n💰 Price: {price_str} EUR\n📝 Details: {text_display}\n"
            f"📸 Media Attached: {media_status}\n\nAdd this drop?")
-    keyboard = [[InlineKeyboardButton("✅ Yes, Add Drop", callback_data="confirm_add_drop"), # Removed |yes param
+    keyboard = [[InlineKeyboardButton("✅ Yes, Add Drop", callback_data="confirm_add_drop"),
                 InlineKeyboardButton("❌ No, Cancel", callback_data="cancel_add")]]
     await send_message_with_retry(context.bot, chat_id, msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
@@ -175,8 +192,8 @@ async def _prepare_and_confirm_drop(
 async def _process_collected_media(context: ContextTypes.DEFAULT_TYPE):
     """Job callback to process a collected media group."""
     job_data = context.job.data
-    user_id = job_data.get("user_id") # Get user_id from job_data
-    chat_id = job_data.get("chat_id") # Get chat_id from job_data
+    user_id = job_data.get("user_id")
+    chat_id = job_data.get("chat_id")
     media_group_id = job_data.get("media_group_id")
 
     if not user_id or not chat_id or not media_group_id:
@@ -184,38 +201,30 @@ async def _process_collected_media(context: ContextTypes.DEFAULT_TYPE):
         return
 
     logger.info(f"Job executing: Process media group {media_group_id} for user {user_id}")
-
-    # Retrieve the specific user's data dictionary from the application's persistence
-    # Use .get(user_id, {}) for safety
     user_data = context.application.user_data.get(user_id, {})
     if not user_data:
          logger.error(f"Job {media_group_id}: Could not find user_data for user {user_id}.")
          return
 
-    # Retrieve collected data from the specific user's dictionary
-    # Use .get(media_group_id) to avoid KeyError if the group was already processed/cancelled
     collected_info = user_data.get('collected_media', {}).get(media_group_id)
-    if not collected_info or 'media' not in collected_info: # Check if 'media' key exists
+    if not collected_info or 'media' not in collected_info:
         logger.warning(f"Job {media_group_id}: No collected media info found in user_data for user {user_id}. Might be already processed or cancelled.")
-        # Still try to clean up potential state flags for this user
         user_data.pop('collecting_media_group_id', None)
         if 'collected_media' in user_data:
             user_data['collected_media'].pop(media_group_id, None)
-            if not user_data['collected_media']: # Remove key if empty
+            if not user_data['collected_media']:
                 user_data.pop('collected_media', None)
         return
 
-    collected_media = collected_info.get('media', []) # Default to empty list
-    caption = collected_info.get('caption', '') # Get collected caption
+    collected_media = collected_info.get('media', [])
+    caption = collected_info.get('caption', '')
 
-    # Clear collection state *within the specific user's data*
     user_data.pop('collecting_media_group_id', None)
     if 'collected_media' in user_data and media_group_id in user_data['collected_media']:
         del user_data['collected_media'][media_group_id]
-        if not user_data['collected_media']: # Remove key if empty
+        if not user_data['collected_media']:
             user_data.pop('collected_media', None)
 
-    # Call the preparation/confirmation function, passing the specific user_data
     await _prepare_and_confirm_drop(context, user_data, chat_id, user_id, caption, collected_media)
 
 # --- Modified Handler for Drop Details Message ---
@@ -227,17 +236,14 @@ async def handle_adm_drop_details_message(update: Update, context: ContextTypes.
 
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    # *** Important: Use application.user_data for shared state like this ***
     user_specific_data = context.application.user_data.get(user_id, {})
 
     if user_id != ADMIN_ID: return
 
-    # Check state FIRST using the user-specific data
     if user_specific_data.get("state") != "awaiting_drop_details":
         logger.debug(f"Ignoring drop details message from user {user_id}, state is not 'awaiting_drop_details' (state: {user_specific_data.get('state')})")
         return
 
-    # Check context requirements earlier using user-specific data
     required_context = ["admin_city", "admin_district", "admin_product_type", "pending_drop_size", "pending_drop_price"]
     if not all(k in user_specific_data for k in required_context):
         logger.warning(f"Context lost for user {user_id} before processing drop details.")
@@ -254,64 +260,49 @@ async def handle_adm_drop_details_message(update: Update, context: ContextTypes.
     elif update.message.video: media_type, file_id = "video", update.message.video.file_id
     elif update.message.animation: media_type, file_id = "gif", update.message.animation.file_id
 
-    # Get text/caption - prioritize caption, then text
     text = (update.message.caption or update.message.text or "").strip()
 
     if media_group_id:
         logger.debug(f"Received message part of media group {media_group_id} from user {user_id}")
-        # Use user_specific_data for temporary collection
         if 'collected_media' not in user_specific_data:
             user_specific_data['collected_media'] = {}
 
-        # Initialize collection for this group if it's the first message we see for it
         if media_group_id not in user_specific_data['collected_media']:
             user_specific_data['collected_media'][media_group_id] = {'media': [], 'caption': None}
             logger.info(f"Started collecting media for group {media_group_id} user {user_id}")
-            # Set a flag indicating collection is in progress for this specific group
             user_specific_data['collecting_media_group_id'] = media_group_id
 
-        # Add media item if present in this specific update
         if media_type and file_id:
-            # Avoid adding duplicates if the same update is processed quickly
             if not any(m['file_id'] == file_id for m in user_specific_data['collected_media'][media_group_id]['media']):
                 user_specific_data['collected_media'][media_group_id]['media'].append(
                     {'type': media_type, 'file_id': file_id}
                 )
                 logger.debug(f"Added media {file_id} ({media_type}) to group {media_group_id}")
 
-        # Store the caption if this update has one (usually the first message has it)
-        # Overwrite previous caption for the group if a new one comes
         if text:
              user_specific_data['collected_media'][media_group_id]['caption'] = text
              logger.debug(f"Stored/updated caption for group {media_group_id}")
 
-        # Remove any previous job for this group and schedule/reschedule
         remove_job_if_exists(job_name, context)
-        # Ensure job_queue is available
         if hasattr(context, 'job_queue') and context.job_queue:
             context.job_queue.run_once(
                 _process_collected_media,
                 when=timedelta(seconds=MEDIA_GROUP_COLLECTION_DELAY),
-                # Pass essential identifiers in job data
                 data={'media_group_id': media_group_id, 'chat_id': chat_id, 'user_id': user_id},
                 name=job_name,
-                job_kwargs={'misfire_grace_time': 15} # Allow some delay
+                job_kwargs={'misfire_grace_time': 15}
             )
             logger.debug(f"Scheduled/Rescheduled job {job_name} for media group {media_group_id}")
         else:
             logger.error("JobQueue not found in context. Cannot schedule media group processing.")
             await send_message_with_retry(context.bot, chat_id, "❌ Error: Internal components missing. Cannot process media group.", parse_mode=None)
-        # Don't proceed to confirmation here, wait for the job
 
     else:
-        # --- Handle Single Message (No Media Group ID) ---
-        # Check if we were previously collecting a media group for this user
         if user_specific_data.get('collecting_media_group_id'):
             logger.warning(f"Received single message from user {user_id} while potentially collecting media group {user_specific_data['collecting_media_group_id']}. Ignoring for drop.")
             return
 
         logger.debug(f"Received single message (or text only) for drop details from user {user_id}")
-        # Clear any potential leftover media group collection state for safety
         user_specific_data.pop('collecting_media_group_id', None)
         user_specific_data.pop('collected_media', None)
 
@@ -319,8 +310,6 @@ async def handle_adm_drop_details_message(update: Update, context: ContextTypes.
         if media_type and file_id:
             single_media_info.append({'type': media_type, 'file_id': file_id})
 
-        # Immediately prepare and confirm this single message
-        # Pass user_specific_data here
         await _prepare_and_confirm_drop(context, user_specific_data, chat_id, user_id, text, single_media_info)
 
 
@@ -328,14 +317,14 @@ async def handle_adm_drop_details_message(update: Update, context: ContextTypes.
 async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays the main admin dashboard, handling both command and callback."""
     user = update.effective_user
-    query = update.callback_query # Will be None if called by command
+    query = update.callback_query
     if not user:
         logger.warning("handle_admin_menu triggered without effective_user.")
         if query: await query.answer("Error: Could not identify user.", show_alert=True)
         return
 
     user_id = user.id
-    chat_id = update.effective_chat.id # Needed for sending new message
+    chat_id = update.effective_chat.id
     is_primary_admin = (user_id == ADMIN_ID)
     is_secondary_admin = (user_id in SECONDARY_ADMIN_IDS)
 
@@ -346,18 +335,16 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         else: await send_message_with_retry(context.bot, chat_id, msg, parse_mode=None)
         return
 
-    # Redirect secondary admins
     if is_secondary_admin and not is_primary_admin:
         logger.info(f"Redirecting secondary admin {user_id} to viewer admin menu.")
         return await handle_viewer_admin_menu(update, context)
 
-    # Primary Admin Dashboard
+    # --- Primary Admin Dashboard ---
     total_users, total_balance, active_products = 0, 0.0, 0
     conn = None
     try:
-        conn = get_db_connection() # Use helper
+        conn = get_db_connection()
         c = conn.cursor()
-        # Use column names
         c.execute("SELECT COUNT(*) as count FROM users")
         res_users = c.fetchone(); total_users = res_users['count'] if res_users else 0
         c.execute("SELECT COALESCE(SUM(balance), 0.0) as total_bal FROM users")
@@ -383,21 +370,24 @@ async def handle_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, 
        f"📦 Active Products: {active_products}\n\n"
        "Select an action:"
     )
+    # --- MODIFIED KEYBOARD ---
     keyboard = [
         [InlineKeyboardButton("📊 Sales Analytics", callback_data="sales_analytics_menu")],
         [InlineKeyboardButton("➕ Add Products", callback_data="adm_city")],
         [InlineKeyboardButton("🗑️ Manage Products", callback_data="adm_manage_products")],
+        [InlineKeyboardButton("👥 Manage Users", callback_data="adm_manage_users|0")], # <-- MODIFIED/ADDED
         [InlineKeyboardButton("🏷️ Manage Discounts", callback_data="adm_manage_discounts")],
         [InlineKeyboardButton("📦 View Bot Stock", callback_data="view_stock")],
         [InlineKeyboardButton("🗺️ Manage Districts", callback_data="adm_manage_districts")],
         [InlineKeyboardButton("🏙️ Manage Cities", callback_data="adm_manage_cities")],
-        [InlineKeyboardButton("🧩 Manage Product Types", callback_data="adm_manage_types")], # Button Text unchanged
+        [InlineKeyboardButton("🧩 Manage Product Types", callback_data="adm_manage_types")],
         [InlineKeyboardButton("🚫 Manage Reviews", callback_data="adm_manage_reviews|0")],
-        [InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast_start")], # Modified callback
+        [InlineKeyboardButton("📢 Broadcast Message", callback_data="adm_broadcast_start")],
         [InlineKeyboardButton("➕ Add New City", callback_data="adm_add_city")],
         [InlineKeyboardButton("📸 Set Bot Media", callback_data="adm_set_media")],
         [InlineKeyboardButton("🏠 User Home Menu", callback_data="back_start")]
     ]
+    # -----------------------
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if query:
@@ -539,11 +529,9 @@ async def handle_sales_run(update: Update, context: ContextTypes.DEFAULT_TYPE, p
         elif report_type == "by_type":
             c.execute(f"SELECT product_type, COALESCE(SUM(price_paid), 0.0) as type_revenue, COUNT(*) as type_units {base_query} GROUP by product_type ORDER BY type_revenue DESC", base_params)
             results = c.fetchall()
-            # *** CHANGE: Use emoji in header ***
             msg = f"📊 Sales by Type: {period_title}\n\n"
             if results:
                 for row in results:
-                     # *** CHANGE: Get emoji for type ***
                     type_name = row['product_type'] or 'N/A'
                     emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI)
                     msg += f"{emoji} {type_name}: {format_currency(row['type_revenue'])} EUR ({row['type_units'] or 0} units)\n"
@@ -559,7 +547,6 @@ async def handle_sales_run(update: Update, context: ContextTypes.DEFAULT_TYPE, p
             msg = f"🏆 Top Products: {period_title}\n\n"
             if results:
                 for i, row in enumerate(results):
-                    # *** CHANGE: Get emoji for type ***
                     type_name = row['product_type'] or 'N/A'
                     emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI)
                     msg += f"{i+1}. {emoji} {row['product_name'] or 'N/A'} ({row['product_size'] or 'N/A'}): {format_currency(row['prod_revenue'])} EUR ({row['prod_units'] or 0} units)\n"
@@ -572,7 +559,7 @@ async def handle_sales_run(update: Update, context: ContextTypes.DEFAULT_TYPE, p
         logger.error(f"Unexpected error generating sales report: {e}", exc_info=True)
         msg = "❌ An unexpected error occurred."
     finally:
-         if conn: conn.close() # Close connection if opened
+         if conn: conn.close()
     keyboard = [[InlineKeyboardButton("⬅️ Back to Period", callback_data=f"sales_select_period|{report_type}"),
                  InlineKeyboardButton("📊 Analytics Menu", callback_data="sales_analytics_menu")]]
     try:
@@ -634,12 +621,10 @@ async def handle_adm_type(update: Update, context: ContextTypes.DEFAULT_TYPE, pa
         return await query.edit_message_text("Error: City/District not found. Please select again.", parse_mode=None)
     lang = context.user_data.get("lang", "en")
     select_type_text = LANGUAGES.get(lang, {}).get("admin_select_type", "Select Product Type:")
-    # *** CHANGE: Use PRODUCT_TYPES dict ***
     if not PRODUCT_TYPES:
         return await query.edit_message_text("No product types configured. Add types via 'Manage Product Types'.", parse_mode=None)
 
     keyboard = []
-    # Sort by type name for consistent order
     for type_name, emoji in sorted(PRODUCT_TYPES.items()):
         keyboard.append([InlineKeyboardButton(f"{emoji} {type_name}", callback_data=f"adm_add|{city_id}|{dist_id}|{type_name}")])
 
@@ -652,12 +637,11 @@ async def handle_adm_add(update: Update, context: ContextTypes.DEFAULT_TYPE, par
     query = update.callback_query
     if query.from_user.id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
     if not params or len(params) < 3: return await query.answer("Error: Location/Type info missing.", show_alert=True)
-    city_id, dist_id, p_type = params # p_type is the name
+    city_id, dist_id, p_type = params
     city_name = CITIES.get(city_id)
     district_name = DISTRICTS.get(city_id, {}).get(dist_id)
     if not city_name or not district_name:
         return await query.edit_message_text("Error: City/District not found. Please select again.", parse_mode=None)
-    # *** CHANGE: Get emoji for the type ***
     type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
     context.user_data["admin_city_id"] = city_id
     context.user_data["admin_district_id"] = dist_id
@@ -667,7 +651,6 @@ async def handle_adm_add(update: Update, context: ContextTypes.DEFAULT_TYPE, par
     keyboard = [[InlineKeyboardButton(f"📏 {s}", callback_data=f"adm_size|{s}")] for s in SIZES]
     keyboard.append([InlineKeyboardButton("📏 Custom Size", callback_data="adm_custom_size")])
     keyboard.append([InlineKeyboardButton("⬅️ Back to Types", callback_data=f"adm_type|{city_id}|{dist_id}")])
-    # *** CHANGE: Use type_emoji in message ***
     await query.edit_message_text(f"📦 Adding {type_emoji} {p_type} in {city_name} / {district_name}\n\nSelect size:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
 async def handle_adm_size(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
@@ -703,8 +686,6 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
     user_id = query.from_user.id
     if user_id != ADMIN_ID: return await query.answer("Access denied.", show_alert=True)
     chat_id = query.message.chat_id
-
-    # *** Important: Use application.user_data for shared state like this ***
     user_specific_data = context.application.user_data.get(user_id, {})
     pending_drop = user_specific_data.get("pending_drop")
 
@@ -720,7 +701,7 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
     price = pending_drop.get("price")
     original_text = pending_drop.get("original_text", "")
     media_list = pending_drop.get("media", [])
-    temp_dir = pending_drop.get("temp_dir") # Temp dir used for download
+    temp_dir = pending_drop.get("temp_dir")
 
     if not all([city, district, p_type, size, price is not None]):
         logger.error(f"Missing data in pending_drop for user {user_id}: {pending_drop}")
@@ -733,7 +714,7 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
     conn = None
     product_id = None
     try:
-        conn = get_db_connection() # Use helper
+        conn = get_db_connection()
         c = conn.cursor()
         c.execute("BEGIN")
         c.execute(
@@ -745,23 +726,18 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
         product_id = c.lastrowid
 
         if product_id and media_list and temp_dir:
-            # Define final media directory on persistent disk
             final_media_dir = os.path.join(MEDIA_DIR, str(product_id))
-            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True) # Ensure dir exists
+            await asyncio.to_thread(os.makedirs, final_media_dir, exist_ok=True)
             logger.info(f"Created/verified final media directory: {final_media_dir}")
-
             media_inserts = []
             for media_item in media_list:
                 if "path" in media_item and "type" in media_item and "file_id" in media_item:
-                    temp_file_path = media_item["path"] # This is the path in the temporary directory
+                    temp_file_path = media_item["path"]
                     if await asyncio.to_thread(os.path.exists, temp_file_path):
                         new_filename = os.path.basename(temp_file_path)
-                        # Create the final path on the persistent disk
                         final_persistent_path = os.path.join(final_media_dir, new_filename)
                         try:
-                            # Move from temp dir to persistent disk
                             await asyncio.to_thread(shutil.move, temp_file_path, final_persistent_path)
-                            # Store the persistent path in the DB
                             media_inserts.append((product_id, media_item["type"], final_persistent_path, media_item["file_id"]))
                             logger.info(f"Moved media file to {final_persistent_path}")
                         except OSError as move_err:
@@ -770,7 +746,6 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
                         logger.warning(f"Media file not found at temp path: {temp_file_path}")
                 else:
                     logger.warning(f"Incomplete media item data: {media_item}")
-
             if media_inserts:
                 c.executemany(
                     "INSERT INTO product_media (product_id, media_type, file_path, telegram_file_id) VALUES (?, ?, ?, ?)",
@@ -779,14 +754,12 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
         conn.commit()
         logger.info(f"Successfully added product {product_id} ({product_name}) to database.")
 
-        # Clean up the temporary directory AFTER successful commit and move
         if temp_dir and await asyncio.to_thread(os.path.exists, temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
             logger.info(f"Cleaned up temporary directory: {temp_dir}")
 
         await query.edit_message_text("✅ Drop Added Successfully!", parse_mode=None)
 
-        # Prepare "Add Another" button using user-specific data
         ctx_city_id = user_specific_data.get('admin_city_id')
         ctx_dist_id = user_specific_data.get('admin_district_id')
         ctx_p_type = user_specific_data.get('admin_product_type')
@@ -805,28 +778,22 @@ async def handle_confirm_add_drop(update: Update, context: ContextTypes.DEFAULT_
         except Exception as rb_err: logger.error(f"Rollback failed during drop add error handling: {rb_err}")
         logger.error(f"Error saving confirmed drop for user {user_id}: {e}", exc_info=True)
         await query.edit_message_text("❌ Error: Failed to save the drop. Please check logs and try again.", parse_mode=None)
-        # Clean up temp dir on error as well
         if temp_dir and await asyncio.to_thread(os.path.exists, temp_dir):
             await asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True)
             logger.info(f"Cleaned up temporary directory after error: {temp_dir}")
     finally:
         if conn: conn.close()
-        # Clear context data related to adding this specific drop from user-specific data
         keys_to_clear = ["state", "pending_drop", "pending_drop_size", "pending_drop_price"]
         for key in keys_to_clear: user_specific_data.pop(key, None)
-        # Keep admin location context for "Add Another"
 
 
 async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Cancels the add product flow and cleans up."""
     query = update.callback_query
-    user_id = update.effective_user.id # Get user_id for job cleanup
-    # *** Important: Use application.user_data for shared state like this ***
+    user_id = update.effective_user.id
     user_specific_data = context.application.user_data.get(user_id, {})
-
     pending_drop = user_specific_data.get("pending_drop")
 
-    # Clean up temporary directory if it exists
     if pending_drop and "temp_dir" in pending_drop and pending_drop["temp_dir"]:
         temp_dir_path = pending_drop["temp_dir"]
         if await asyncio.to_thread(os.path.exists, temp_dir_path):
@@ -836,18 +803,15 @@ async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=
             except Exception as e:
                 logger.error(f"Error cleaning up temp dir {temp_dir_path} on cancel: {e}")
 
-    # Clear all related context keys from user-specific data
     keys_to_clear = [
         "state", "pending_drop", "pending_drop_size", "pending_drop_price",
         "admin_city_id", "admin_district_id", "admin_product_type",
         "admin_city", "admin_district",
-        "collecting_media_group_id", "collected_media" # <-- Clear media group keys too
+        "collecting_media_group_id", "collected_media"
     ]
     for key in keys_to_clear:
         user_specific_data.pop(key, None)
 
-    # Attempt to cancel any pending job for this user
-    # The job name includes the user_id, so it's user-specific
     if 'collecting_media_group_id' in user_specific_data:
         media_group_id = user_specific_data.pop('collecting_media_group_id', None)
         if media_group_id:
@@ -859,7 +823,7 @@ async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=
             await query.edit_message_text("❌ Add Product Cancelled", parse_mode=None)
          except telegram_error.BadRequest as e:
              if "message is not modified" not in str(e).lower(): logger.error(f"Error editing cancel message: {e}")
-             else: pass # Ignore if not modified
+             else: pass
          keyboard = [[InlineKeyboardButton("🔧 Admin Menu", callback_data="admin_menu"),
                       InlineKeyboardButton("🏠 User Home", callback_data="back_start")]]
          await send_message_with_retry(
@@ -868,7 +832,7 @@ async def cancel_add(update: Update, context: ContextTypes.DEFAULT_TYPE, params=
              reply_markup=InlineKeyboardMarkup(keyboard),
              parse_mode=None
          )
-    elif update.message: # If cancelled via message handler perhaps
+    elif update.message:
          await send_message_with_retry(context.bot, update.message.chat_id, "Add product cancelled.", parse_mode=None)
     else:
          logger.info("Add product flow cancelled internally (no query/message object).")
@@ -1134,9 +1098,8 @@ async def handle_adm_manage_products_dist(update: Update, context: ContextTypes.
                                      reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
         keyboard = []
         for pt in product_types_in_dist:
-             # *** CHANGE: Get emoji for type ***
-            emoji = PRODUCT_TYPES.get(pt, DEFAULT_PRODUCT_EMOJI)
-            keyboard.append([InlineKeyboardButton(f"{emoji} {pt}", callback_data=f"adm_manage_products_type|{city_id}|{dist_id}|{pt}")])
+             emoji = PRODUCT_TYPES.get(pt, DEFAULT_PRODUCT_EMOJI)
+             keyboard.append([InlineKeyboardButton(f"{emoji} {pt}", callback_data=f"adm_manage_products_type|{city_id}|{dist_id}|{pt}")])
 
         keyboard.append([InlineKeyboardButton("⬅️ Back to Districts", callback_data=f"adm_manage_products_city|{city_id}")])
         await query.edit_message_text(f"🗑️ Manage Products in {city_name} / {district_name}\n\nSelect product type:",
@@ -1159,13 +1122,11 @@ async def handle_adm_manage_products_type(update: Update, context: ContextTypes.
     if not city_name or not district_name:
         return await query.edit_message_text("Error: City/District not found.", parse_mode=None)
 
-    # *** CHANGE: Get emoji for type ***
     type_emoji = PRODUCT_TYPES.get(p_type, DEFAULT_PRODUCT_EMOJI)
 
     conn = None # Initialize conn
     try:
         conn = get_db_connection() # Use helper
-        # row_factory is set in helper
         c = conn.cursor()
         # Use column names
         c.execute("""
@@ -1174,7 +1135,6 @@ async def handle_adm_manage_products_type(update: Update, context: ContextTypes.
             ORDER BY size, price, id
         """, (city_name, district_name, p_type))
         products = c.fetchall()
-        # *** CHANGE: Use emoji in header ***
         msg = f"🗑️ Products: {type_emoji} {p_type} in {city_name} / {district_name}\n\n"
         keyboard = []
         if not products:
@@ -1183,7 +1143,6 @@ async def handle_adm_manage_products_type(update: Update, context: ContextTypes.
              msg += "ID | Size | Price | Status (Avail/Reserved)\n"
              msg += "----------------------------------------\n"
              for prod in products:
-                # Access by column name
                 prod_id, size_str, price_str = prod['id'], prod['size'], format_currency(prod['price'])
                 status_str = f"{prod['available']}/{prod['reserved']}"
                 msg += f"{prod_id} | {size_str} | {price_str}€ | {status_str}\n"
@@ -1214,7 +1173,6 @@ async def handle_adm_delete_prod(update: Update, context: ContextTypes.DEFAULT_T
     conn = None # Initialize conn
     try:
         conn = get_db_connection() # Use helper
-        # row_factory is set in helper
         c = conn.cursor()
         # Use column names
         c.execute("""
@@ -1225,7 +1183,6 @@ async def handle_adm_delete_prod(update: Update, context: ContextTypes.DEFAULT_T
         """, (product_id,))
         result = c.fetchone()
         if result:
-            # *** CHANGE: Get emoji for type ***
             type_name = result['product_type']
             emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI)
             product_name = result['name'] or product_name
@@ -1249,7 +1206,6 @@ async def handle_adm_delete_prod(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # --- Manage Product Types Handlers ---
-# *** REWORKED to manage emojis ***
 async def handle_adm_manage_types(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows options to manage product types (edit emoji, delete)."""
     query = update.callback_query
@@ -1260,9 +1216,7 @@ async def handle_adm_manage_types(update: Update, context: ContextTypes.DEFAULT_
     keyboard = []
     for type_name, emoji in sorted(PRODUCT_TYPES.items()):
          keyboard.append([
-             # Button to open edit menu for this type
              InlineKeyboardButton(f"{emoji} {type_name}", callback_data=f"adm_edit_type_menu|{type_name}"),
-             # Keep delete button separate for clarity
              InlineKeyboardButton(f"🗑️ Delete", callback_data=f"adm_delete_type|{type_name}")
          ])
     keyboard.extend([
@@ -1271,7 +1225,7 @@ async def handle_adm_manage_types(update: Update, context: ContextTypes.DEFAULT_
     ])
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
-# --- NEW: Edit Type Menu ---
+# --- Edit Type Menu ---
 async def handle_adm_edit_type_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Shows options for a specific product type: change emoji or delete."""
     query = update.callback_query
@@ -1281,7 +1235,7 @@ async def handle_adm_edit_type_menu(update: Update, context: ContextTypes.DEFAUL
     if not params: return await query.answer("Error: Type name missing.", show_alert=True)
 
     type_name = params[0]
-    current_emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI) # Get current emoji
+    current_emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI)
 
     msg_template = lang_data.get("admin_edit_type_menu", "🧩 Editing Type: {type_name}\n\nCurrent Emoji: {emoji}\n\nWhat would you like to do?")
     msg = msg_template.format(type_name=type_name, emoji=current_emoji)
@@ -1294,7 +1248,7 @@ async def handle_adm_edit_type_menu(update: Update, context: ContextTypes.DEFAUL
     ]
     await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
-# --- NEW: Change Type Emoji Prompt ---
+# --- Change Type Emoji Prompt ---
 async def handle_adm_change_type_emoji(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Change Emoji' button press."""
     query = update.callback_query
@@ -1305,15 +1259,15 @@ async def handle_adm_change_type_emoji(update: Update, context: ContextTypes.DEF
     type_name = params[0]
 
     context.user_data["state"] = "awaiting_edit_type_emoji"
-    context.user_data["edit_type_name"] = type_name # Store the type name being edited
+    context.user_data["edit_type_name"] = type_name
     current_emoji = PRODUCT_TYPES.get(type_name, DEFAULT_PRODUCT_EMOJI)
 
     prompt_text = lang_data.get("admin_enter_type_emoji", "✍️ Please reply with a single emoji for the product type:")
-    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"adm_edit_type_menu|{type_name}")]] # Back to edit menu
+    keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data=f"adm_edit_type_menu|{type_name}")]]
     await query.edit_message_text(f"Current Emoji: {current_emoji}\n\n{prompt_text}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
     await query.answer("Enter new emoji in chat.")
 
-# --- MODIFIED: Add Type asks for name first ---
+# --- Add Type asks for name first ---
 async def handle_adm_add_type(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Add New Type' button press - asks for name first."""
     query = update.callback_query
@@ -1334,7 +1288,7 @@ async def handle_adm_delete_type(update: Update, context: ContextTypes.DEFAULT_T
         conn = get_db_connection() # Use helper
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM products WHERE product_type = ?", (type_name,))
-        product_count = c.fetchone()[0] # Fetch first column
+        product_count = c.fetchone()[0]
         if product_count > 0:
             keyboard = [[InlineKeyboardButton("⬅️ Back", callback_data="adm_manage_types")]]
             await query.edit_message_text(f"⚠️ Cannot Delete Type\n\nType {type_name} is currently used by {product_count} product(s). Please delete or reassign those products first.",
@@ -1353,7 +1307,7 @@ async def handle_adm_delete_type(update: Update, context: ContextTypes.DEFAULT_T
         if conn: conn.close() # Close connection if opened
 
 
-# --- Discount Handlers (Unchanged) ---
+# --- Discount Handlers ---
 async def handle_adm_manage_discounts(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays existing discount codes and management options."""
     query = update.callback_query
@@ -1361,7 +1315,6 @@ async def handle_adm_manage_discounts(update: Update, context: ContextTypes.DEFA
     conn = None # Initialize conn
     try:
         conn = get_db_connection() # Use helper
-        # row_factory is set in helper
         c = conn.cursor()
         c.execute("""
             SELECT id, code, discount_type, value, is_active, max_uses, uses_count, expiry_date
@@ -1421,7 +1374,6 @@ async def handle_adm_toggle_discount(update: Update, context: ContextTypes.DEFAU
         code_id = int(params[0])
         conn = get_db_connection() # Use helper
         c = conn.cursor()
-        # Use column name
         c.execute("SELECT is_active FROM discount_codes WHERE id = ?", (code_id,))
         result = c.fetchone()
         if not result: return await query.answer("Code not found.", show_alert=True)
@@ -1450,7 +1402,6 @@ async def handle_adm_delete_discount(update: Update, context: ContextTypes.DEFAU
         code_id = int(params[0])
         conn = get_db_connection() # Use helper
         c = conn.cursor()
-        # Use column name
         c.execute("SELECT code FROM discount_codes WHERE id = ?", (code_id,))
         result = c.fetchone()
         if not result: return await query.answer("Code not found.", show_alert=True)
@@ -1505,7 +1456,6 @@ async def handle_adm_set_discount_type(update: Update, context: ContextTypes.DEF
     current_state = context.user_data.get("state")
     if current_state not in ['awaiting_discount_type', 'awaiting_discount_code']: # Check if state is valid
          logger.warning(f"handle_adm_set_discount_type called in wrong state: {current_state}")
-         # Try to recover state if possible, otherwise go back
          if context.user_data and 'new_discount_info' in context.user_data and 'code' in context.user_data['new_discount_info']:
              context.user_data['state'] = 'awaiting_discount_type'
              logger.info("Forcing state back to awaiting_discount_type")
@@ -1533,7 +1483,6 @@ async def handle_adm_set_discount_type(update: Update, context: ContextTypes.DEF
         else: await query.answer()
 
 # --- Set Bot Media Handlers ---
-
 async def handle_adm_set_media(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles 'Set Bot Media' button press."""
     query = update.callback_query
@@ -1547,7 +1496,6 @@ async def handle_adm_set_media(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 # --- Review Management Handlers ---
-
 async def handle_adm_manage_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Displays reviews paginated for the admin with delete options."""
     query = update.callback_query
@@ -1677,7 +1625,6 @@ async def handle_adm_broadcast_target_type(update: Update, context: ContextTypes
     lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
 
     if target_type == 'all':
-        # Ask for message directly
         context.user_data['state'] = 'awaiting_broadcast_message'
         ask_msg_text = lang_data.get("broadcast_ask_message", "📝 Now send the message content (text, photo, video, or GIF with caption):")
         keyboard = [[InlineKeyboardButton("❌ Cancel Broadcast", callback_data="cancel_broadcast")]]
@@ -1685,12 +1632,12 @@ async def handle_adm_broadcast_target_type(update: Update, context: ContextTypes
         await query.answer("Send the message content.")
 
     elif target_type == 'city':
-        load_all_data() # Ensure CITIES is fresh
+        load_all_data()
         if not CITIES:
              await query.edit_message_text("No cities configured. Cannot target by city.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back", callback_data="adm_broadcast_start")]]), parse_mode=None)
              return
         sorted_city_ids = sorted(CITIES.keys(), key=lambda city_id: CITIES.get(city_id, ''))
-        keyboard = [[InlineKeyboardButton(f"🏙️ {CITIES.get(c,'N/A')}", callback_data=f"adm_broadcast_target_city|{CITIES.get(c,'N/A')}")] for c in sorted_city_ids if CITIES.get(c)] # Use name as value
+        keyboard = [[InlineKeyboardButton(f"🏙️ {CITIES.get(c,'N/A')}", callback_data=f"adm_broadcast_target_city|{CITIES.get(c,'N/A')}")] for c in sorted_city_ids if CITIES.get(c)]
         keyboard.append([InlineKeyboardButton("❌ Cancel Broadcast", callback_data="cancel_broadcast")])
         select_city_text = lang_data.get("broadcast_select_city_target", "🏙️ Select City to Target\n\nUsers whose last purchase was in:")
         await query.edit_message_text(select_city_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
@@ -1698,12 +1645,11 @@ async def handle_adm_broadcast_target_type(update: Update, context: ContextTypes
 
     elif target_type == 'status':
         select_status_text = lang_data.get("broadcast_select_status_target", "👑 Select Status to Target:")
-        # Get status labels from the language dict for buttons
         vip_label = lang_data.get("broadcast_status_vip", "VIP 👑")
         regular_label = lang_data.get("broadcast_status_regular", "Regular ⭐")
         new_label = lang_data.get("broadcast_status_new", "New 🌱")
         keyboard = [
-            [InlineKeyboardButton(vip_label, callback_data=f"adm_broadcast_target_status|{vip_label}")], # Pass label with emoji
+            [InlineKeyboardButton(vip_label, callback_data=f"adm_broadcast_target_status|{vip_label}")],
             [InlineKeyboardButton(regular_label, callback_data=f"adm_broadcast_target_status|{regular_label}")],
             [InlineKeyboardButton(new_label, callback_data=f"adm_broadcast_target_status|{new_label}")],
             [InlineKeyboardButton("❌ Cancel Broadcast", callback_data="cancel_broadcast")]
@@ -1720,7 +1666,7 @@ async def handle_adm_broadcast_target_type(update: Update, context: ContextTypes
 
     else:
         await query.answer("Unknown target type selected.", show_alert=True)
-        await handle_adm_broadcast_start(update, context) # Go back to selection
+        await handle_adm_broadcast_start(update, context)
 
 
 async def handle_adm_broadcast_target_city(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
@@ -1734,7 +1680,6 @@ async def handle_adm_broadcast_target_city(update: Update, context: ContextTypes
     lang = context.user_data.get("lang", "en")
     lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
 
-    # Ask for message
     context.user_data['state'] = 'awaiting_broadcast_message'
     ask_msg_text = lang_data.get("broadcast_ask_message", "📝 Now send the message content (text, photo, video, or GIF with caption):")
     keyboard = [[InlineKeyboardButton("❌ Cancel Broadcast", callback_data="cancel_broadcast")]]
@@ -1747,19 +1692,17 @@ async def handle_adm_broadcast_target_status(update: Update, context: ContextTyp
     if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
     if not params: return await query.answer("Error: Status value missing.", show_alert=True)
 
-    status_value = params[0] # This now includes the emoji potentially
+    status_value = params[0]
     context.user_data['broadcast_target_value'] = status_value
     lang = context.user_data.get("lang", "en")
     lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
 
-    # Ask for message
     context.user_data['state'] = 'awaiting_broadcast_message'
     ask_msg_text = lang_data.get("broadcast_ask_message", "📝 Now send the message content (text, photo, video, or GIF with caption):")
     keyboard = [[InlineKeyboardButton("❌ Cancel Broadcast", callback_data="cancel_broadcast")]]
     await query.edit_message_text(f"Targeting users with status: {status_value}\n\n{ask_msg_text}", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
     await query.answer("Send the message content.")
 
-# Message handler for inactive days input is added later
 
 async def handle_confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles the 'Yes' confirmation for the broadcast."""
@@ -1774,20 +1717,18 @@ async def handle_confirm_broadcast(update: Update, context: ContextTypes.DEFAULT
     text = broadcast_content.get('text')
     media_file_id = broadcast_content.get('media_file_id')
     media_type = broadcast_content.get('media_type')
-    target_type = broadcast_content.get('target_type', 'all') # Default to all if missing
+    target_type = broadcast_content.get('target_type', 'all')
     target_value = broadcast_content.get('target_value')
     admin_chat_id = query.message.chat_id
 
     try:
         await query.edit_message_text("⏳ Broadcast initiated. Fetching users and sending messages...", parse_mode=None)
-    except telegram_error.BadRequest: await query.answer() # Ignore if not modified
+    except telegram_error.BadRequest: await query.answer()
 
-    # Clear intermediate broadcast keys now that we have the content
     context.user_data.pop('broadcast_target_type', None)
     context.user_data.pop('broadcast_target_value', None)
-    context.user_data.pop('broadcast_content', None) # Clear after retrieving info
+    context.user_data.pop('broadcast_content', None)
 
-    # Start the broadcast task
     asyncio.create_task(send_broadcast(context, text, media_file_id, media_type, target_type, target_value, admin_chat_id))
 
 
@@ -1796,7 +1737,6 @@ async def handle_cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     if query.from_user.id != ADMIN_ID: return await query.answer("Access Denied.", show_alert=True)
 
-    # Clear all broadcast-related keys
     context.user_data.pop('state', None)
     context.user_data.pop('broadcast_content', None)
     context.user_data.pop('broadcast_target_type', None)
@@ -1804,7 +1744,7 @@ async def handle_cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_
 
     try:
         await query.edit_message_text("❌ Broadcast cancelled.", parse_mode=None)
-    except telegram_error.BadRequest: await query.answer() # Ignore if not modified
+    except telegram_error.BadRequest: await query.answer()
 
     keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]]
     await send_message_with_retry(context.bot, query.message.chat_id, "Returning to Admin Menu.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
@@ -1814,10 +1754,7 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, media_fi
     bot = context.bot
     lang_data = LANGUAGES.get('en', {}) # Use English for internal messages
 
-    # --- Fetch Target User IDs ---
-    # Use asyncio.to_thread for the synchronous DB call
     user_ids = await asyncio.to_thread(fetch_user_ids_for_broadcast, target_type, target_value)
-    # ----------------------------
 
     if not user_ids:
         logger.warning(f"No users found for broadcast target: type={target_type}, value={target_value}")
@@ -1829,7 +1766,7 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, media_fi
     logger.info(f"Starting broadcast to {total_users} users (Target: {target_type}={target_value})...")
 
     status_message = None
-    status_update_interval = max(10, total_users // 20) # Update admin every 5% or 10 users
+    status_update_interval = max(10, total_users // 20)
 
     try:
         status_message = await send_message_with_retry(bot, admin_chat_id, f"⏳ Broadcasting... (0/{total_users})", parse_mode=None)
@@ -1865,10 +1802,8 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, media_fi
                  if isinstance(retry_e, (telegram_error.Unauthorized, telegram_error.BadRequest)): block_count +=1 # Count as blocked if retry fails with these
             except Exception as e: logger.error(f"Broadcast fail (Unexpected) for {user_id}: {e}", exc_info=True); fail_count += 1
 
-            # Basic rate limiting
             await asyncio.sleep(0.05) # ~20 messages per second limit
 
-            # Update admin status
             if status_message and (i + 1) % status_update_interval == 0:
                  try:
                      await context.bot.edit_message_text(
@@ -1885,7 +1820,6 @@ async def send_broadcast(context: ContextTypes.DEFAULT_TYPE, text: str, media_fi
          summary_msg = (f"✅ Broadcast Complete\n\nTarget: {target_type} = {target_value or 'N/A'}\n"
                         f"Sent to: {success_count}/{total_users}\n"
                         f"Failed: {fail_count}\n(Blocked/Deactivated: {block_count})")
-         # Edit final status or send new if edit failed
          if status_message:
              try: await context.bot.edit_message_text(chat_id=admin_chat_id, message_id=status_message.message_id, text=summary_msg, parse_mode=None)
              except Exception: await send_message_with_retry(bot, admin_chat_id, summary_msg, parse_mode=None)
@@ -1899,13 +1833,11 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
     query = update.callback_query
     user_id = query.from_user.id
     is_primary_admin = (user_id == ADMIN_ID)
-    # Secondary admins cannot perform destructive confirm actions handled here
     if not is_primary_admin:
         logger.warning(f"Non-primary admin {user_id} tried to confirm a destructive action.")
         await query.answer("Permission denied for this action.", show_alert=True)
         return
 
-    # *** Important: Use application.user_data for shared state like this ***
     user_specific_data = context.application.user_data.get(user_id, {})
     action = user_specific_data.pop("confirm_action", None)
 
@@ -1930,13 +1862,11 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
              city_id_str = action_params[0]; city_id_int = int(city_id_str)
              city_name = CITIES.get(city_id_str)
              if city_name:
-                 # Find products to delete associated media first
                  c.execute("SELECT id FROM products WHERE city = ?", (city_name,))
                  product_ids_to_delete = [row[0] for row in c.fetchall()]
                  if product_ids_to_delete:
                      placeholders = ','.join('?' * len(product_ids_to_delete))
                      c.execute(f"DELETE FROM product_media WHERE product_id IN ({placeholders})", product_ids_to_delete)
-                     # Delete associated media folders (run in background)
                      for pid in product_ids_to_delete:
                           media_dir_to_del = os.path.join(MEDIA_DIR, str(pid))
                           if await asyncio.to_thread(os.path.exists, media_dir_to_del):
@@ -1957,17 +1887,14 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
              city_id_str, dist_id_str = action_params[0], action_params[1]
              city_id_int, dist_id_int = int(city_id_str), int(dist_id_str)
              city_name = CITIES.get(city_id_str)
-             # Use column name
              c.execute("SELECT name FROM districts WHERE id = ? AND city_id = ?", (dist_id_int, city_id_int))
              dist_res = c.fetchone(); district_name = dist_res['name'] if dist_res else None
              if city_name and district_name:
-                 # Find products to delete media
                  c.execute("SELECT id FROM products WHERE city = ? AND district = ?", (city_name, district_name))
                  product_ids_to_delete = [row[0] for row in c.fetchall()]
                  if product_ids_to_delete:
                      placeholders = ','.join('?' * len(product_ids_to_delete))
                      c.execute(f"DELETE FROM product_media WHERE product_id IN ({placeholders})", product_ids_to_delete)
-                     # Delete associated media folders
                      for pid in product_ids_to_delete:
                           media_dir_to_del = os.path.join(MEDIA_DIR, str(pid))
                           if await asyncio.to_thread(os.path.exists, media_dir_to_del):
@@ -1985,7 +1912,6 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
         elif action_type == "confirm_remove_product":
              if not action_params: raise ValueError("Missing product_id")
              product_id = int(action_params[0])
-             # Use column names
              c.execute("SELECT ci.id as city_id, di.id as dist_id, p.product_type FROM products p LEFT JOIN cities ci ON p.city = ci.name LEFT JOIN districts di ON p.district = di.name AND ci.id = di.city_id WHERE p.id = ?", (product_id,))
              back_details_tuple = c.fetchone()
              c.execute("DELETE FROM product_media WHERE product_id = ?", (product_id,))
@@ -1993,7 +1919,6 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
              if delete_prod_result.rowcount > 0:
                   conn.commit()
                   success_msg = f"✅ Product ID {product_id} removed!"
-                  # Schedule media directory deletion (using MEDIA_DIR)
                   media_dir_to_delete = os.path.join(MEDIA_DIR, str(product_id))
                   if await asyncio.to_thread(os.path.exists, media_dir_to_delete):
                        asyncio.create_task(asyncio.to_thread(shutil.rmtree, media_dir_to_delete, ignore_errors=True))
@@ -2020,7 +1945,6 @@ async def handle_confirm_yes(update: Update, context: ContextTypes.DEFAULT_TYPE,
         elif action_type == "delete_discount":
              if not action_params: raise ValueError("Missing discount_id")
              code_id = int(action_params[0])
-             # Use column name
              c.execute("SELECT code FROM discount_codes WHERE id = ?", (code_id,))
              code_res = c.fetchone(); code_text = code_res['code'] if code_res else f"ID {code_id}"
              delete_disc_result = c.execute("DELETE FROM discount_codes WHERE id = ?", (code_id,))
@@ -2288,7 +2212,6 @@ async def handle_adm_price_message(update: Update, context: ContextTypes.DEFAULT
     context.user_data["state"] = "awaiting_drop_details"
     keyboard = [[InlineKeyboardButton("❌ Cancel Add", callback_data="cancel_add")]]
     price_f = format_currency(price)
-    # Modified instruction text
     await send_message_with_retry(context.bot, chat_id,
                                   f"Price set to {price_f} EUR. Now send drop details:\n"
                                   f"- Send text only, OR\n"
@@ -2316,8 +2239,6 @@ async def handle_adm_bot_media_message(update: Update, context: ContextTypes.DEF
     context.user_data.pop("state", None)
     await send_message_with_retry(context.bot, chat_id, "⏳ Downloading and saving new media...", parse_mode=None)
 
-    # Save directly to the persistent disk media directory
-    # MEDIA_DIR is imported from utils and points to /mnt/data/media
     final_media_path = os.path.join(MEDIA_DIR, f"bot_media{file_extension}")
     temp_download_path = final_media_path + ".tmp"
 
@@ -2330,7 +2251,6 @@ async def handle_adm_bot_media_message(update: Update, context: ContextTypes.DEF
         if not await asyncio.to_thread(os.path.exists, temp_download_path) or await asyncio.to_thread(os.path.getsize, temp_download_path) == 0:
              raise IOError("Downloaded file is empty or missing.")
 
-        # Get old path from global BOT_MEDIA dict (already points to MEDIA_DIR if loaded)
         old_media_path_global = BOT_MEDIA.get("path")
         if old_media_path_global and old_media_path_global != final_media_path and await asyncio.to_thread(os.path.exists, old_media_path_global):
             try:
@@ -2339,50 +2259,36 @@ async def handle_adm_bot_media_message(update: Update, context: ContextTypes.DEF
             except OSError as e:
                 logger.warning(f"Could not remove old bot media file '{old_media_path_global}': {e}")
 
-        # Move temp file to final location on persistent disk
         await asyncio.to_thread(shutil.move, temp_download_path, final_media_path)
         logger.info(f"Moved media to final path: {final_media_path}")
 
-        # Update global BOT_MEDIA dict and save to JSON on persistent disk
         BOT_MEDIA["type"] = new_media_type
-        BOT_MEDIA["path"] = final_media_path # Store the correct persistent path
+        BOT_MEDIA["path"] = final_media_path
 
-        # --- CORRECTED JSON WRITING ---
-        # Use BOT_MEDIA_JSON_PATH from utils
         try:
-            # Define a SYNCHRONOUS function for the actual file writing
             def write_json_sync(path, data):
                 try:
                     with open(path, 'w') as f:
                         json.dump(data, f, indent=4)
                     logger.info(f"Successfully wrote updated BOT_MEDIA to {path}: {data}")
-                    return True # Indicate success
+                    return True
                 except Exception as e_sync:
                     logger.error(f"Failed during synchronous write to {path}: {e_sync}")
-                    return False # Indicate failure
+                    return False
 
-            # Run the SYNCHRONOUS function in a separate thread using asyncio.to_thread
             write_successful = await asyncio.to_thread(write_json_sync, BOT_MEDIA_JSON_PATH, BOT_MEDIA)
 
             if not write_successful:
-                # Handle the error if the write failed within the thread
                 raise IOError(f"Failed to write bot media configuration to {BOT_MEDIA_JSON_PATH}")
-
-            # Optional: Reload data globally if you need the change reflected immediately without restart
-            # load_all_data() # This function is defined in utils.py
 
         except Exception as e:
             logger.error(f"Error during bot media JSON writing process: {e}")
-            # Handle the error appropriately, maybe send a message back to the admin
             await send_message_with_retry(context.bot, chat_id, f"❌ Error saving media configuration: {e}", parse_mode=None)
-            # Potentially clean up the downloaded file if the config save failed
             if await asyncio.to_thread(os.path.exists, final_media_path):
                  try: await asyncio.to_thread(os.remove, final_media_path)
                  except OSError: pass
-            return # Stop processing if save failed
-        # --- END OF CORRECTED JSON WRITING ---
+            return
 
-        # --- Continue only if save was successful ---
         await send_message_with_retry(context.bot, chat_id, "✅ Bot Media Updated Successfully!", parse_mode=None)
         keyboard = [[InlineKeyboardButton("⬅️ Back to Admin Menu", callback_data="admin_menu")]]
         await send_message_with_retry(context.bot, chat_id, "Changes applied.", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
@@ -2397,13 +2303,12 @@ async def handle_adm_bot_media_message(update: Update, context: ContextTypes.DEF
         logger.error(f"Unexpected error updating bot media: {e}", exc_info=True)
         await send_message_with_retry(context.bot, chat_id, "❌ An unexpected error occurred.", parse_mode=None)
     finally:
-        # Clean up temp file if it still exists in the final block
         if 'temp_download_path' in locals() and await asyncio.to_thread(os.path.exists, temp_download_path):
              try: await asyncio.to_thread(os.remove, temp_download_path)
              except OSError as e: logger.warning(f"Could not remove temp dl file '{temp_download_path}': {e}")
 
 
-# --- MODIFIED: Add Product Type Handlers (including emoji) ---
+# --- Add Product Type Handlers ---
 async def handle_adm_add_type_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles text reply when state is 'awaiting_new_type_name'."""
     user_id = update.effective_user.id
@@ -2418,11 +2323,9 @@ async def handle_adm_add_type_message(update: Update, context: ContextTypes.DEFA
     type_name = update.message.text.strip()
     if not type_name: return await send_message_with_retry(context.bot, chat_id, "Product type name cannot be empty.", parse_mode=None)
     if len(type_name) > 100: return await send_message_with_retry(context.bot, chat_id, "Product type name too long (max 100 chars).", parse_mode=None)
-    # Check against keys of the PRODUCT_TYPES dict
     if type_name.lower() in [pt.lower() for pt in PRODUCT_TYPES.keys()]:
         return await send_message_with_retry(context.bot, chat_id, f"❌ Error: Type '{type_name}' already exists.", parse_mode=None)
 
-    # Store name and change state to wait for emoji
     context.user_data["new_type_name"] = type_name
     context.user_data["state"] = "awaiting_new_type_emoji"
     prompt_text = lang_data.get("admin_enter_type_emoji", "✍️ Please reply with a single emoji for the product type:")
@@ -2450,23 +2353,18 @@ async def handle_adm_add_type_emoji_message(update: Update, context: ContextType
         await send_message_with_retry(context.bot, chat_id, "❌ Error: Context lost. Please start adding the type again.", parse_mode=None)
         return
 
-    # Basic emoji validation (is it a single character?)
-    # You could use the 'emoji' library for more robust checking if needed:
-    # import emoji
-    # if not emoji.is_emoji(emoji_char): ...
-    if len(emoji) != 1:
+    if len(emoji) != 1: # Basic check
         invalid_emoji_msg = lang_data.get("admin_invalid_emoji", "❌ Invalid input. Please send a single emoji.")
         await send_message_with_retry(context.bot, chat_id, invalid_emoji_msg, parse_mode=None)
-        return # Keep state awaiting_new_type_emoji
+        return
 
     conn=None
     try:
-        conn = get_db_connection() # Use helper
+        conn = get_db_connection()
         c = conn.cursor()
-        # Insert name and emoji
         c.execute("INSERT INTO product_types (name, emoji) VALUES (?, ?)", (type_name, emoji))
         conn.commit()
-        load_all_data() # Reload global data
+        load_all_data()
         context.user_data.pop("state", None)
         context.user_data.pop("new_type_name", None)
 
@@ -2476,7 +2374,6 @@ async def handle_adm_add_type_emoji_message(update: Update, context: ContextType
         await send_message_with_retry(context.bot, chat_id, success_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
     except sqlite3.IntegrityError:
-        # This might happen in a race condition, though unlikely with admin-only access
         await send_message_with_retry(context.bot, chat_id, f"❌ Error: Product type '{type_name}' already exists.", parse_mode=None)
         context.user_data.pop("state", None); context.user_data.pop("new_type_name", None)
     except sqlite3.Error as e:
@@ -2488,7 +2385,7 @@ async def handle_adm_add_type_emoji_message(update: Update, context: ContextType
         if conn: conn.close()
 
 
-# --- NEW: Edit Product Type Emoji Message Handler ---
+# --- Edit Product Type Emoji Message Handler ---
 async def handle_adm_edit_type_emoji_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the emoji reply when state is 'awaiting_edit_type_emoji'."""
     user_id = update.effective_user.id
@@ -2509,11 +2406,10 @@ async def handle_adm_edit_type_emoji_message(update: Update, context: ContextTyp
         await send_message_with_retry(context.bot, chat_id, "❌ Error: Context lost. Please start editing the type again.", parse_mode=None)
         return
 
-    # Basic emoji validation
-    if len(new_emoji) != 1:
+    if len(new_emoji) != 1: # Basic check
         invalid_emoji_msg = lang_data.get("admin_invalid_emoji", "❌ Invalid input. Please send a single emoji.")
         await send_message_with_retry(context.bot, chat_id, invalid_emoji_msg, parse_mode=None)
-        return # Keep state
+        return
 
     conn = None
     try:
@@ -2526,7 +2422,7 @@ async def handle_adm_edit_type_emoji_message(update: Update, context: ContextTyp
             logger.warning(f"Attempted to update emoji for non-existent type: {type_name}")
             await send_message_with_retry(context.bot, chat_id, f"❌ Error: Type '{type_name}' not found.", parse_mode=None)
         else:
-            load_all_data() # Reload global data
+            load_all_data()
             success_msg_template = lang_data.get("admin_type_emoji_updated", "✅ Emoji updated successfully for {type_name}!")
             success_text = success_msg_template.format(type_name=type_name) + f" New emoji: {new_emoji}"
             keyboard = [[InlineKeyboardButton("⬅️ Manage Types", callback_data="adm_manage_types")]]
@@ -2545,7 +2441,6 @@ async def handle_adm_edit_type_emoji_message(update: Update, context: ContextTyp
 
 
 # --- Message Handlers for Discount Creation ---
-
 async def process_discount_code_input(update: Update, context: ContextTypes.DEFAULT_TYPE, code_text: str):
     """Shared logic to process entered/generated discount code and ask for type."""
     chat_id = update.effective_chat.id
@@ -2646,68 +2541,7 @@ async def handle_adm_discount_value_message(update: Update, context: ContextType
         if conn: conn.close() # Close connection if opened
 
 
-# --- Message Handler for Broadcast ---
-async def handle_adm_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles receiving the message content for the broadcast, AFTER target is set."""
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
-    if user_id != ADMIN_ID: return
-    # Check if state is correct OR if we are expecting the message after target selection
-    if context.user_data.get("state") != 'awaiting_broadcast_message': return
-    if not update.message: return
-
-    lang = context.user_data.get("lang", "en")
-    lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
-
-    text = (update.message.text or update.message.caption or "").strip() # Ensure strip
-    media_file_id, media_type = None, None
-    if update.message.photo: media_file_id, media_type = update.message.photo[-1].file_id, "photo"
-    elif update.message.video: media_file_id, media_type = update.message.video.file_id, "video"
-    elif update.message.animation: media_file_id, media_type = update.message.animation.file_id, "gif"
-
-    # Ensure either text or media exists
-    if not text and not media_file_id:
-        await send_message_with_retry(context.bot, chat_id, "Broadcast message cannot be empty. Please send text or media.", parse_mode=None)
-        return # Keep state awaiting_broadcast_message
-
-    # Retrieve target information stored earlier
-    target_type = context.user_data.get('broadcast_target_type', 'all') # Default if somehow missing
-    target_value = context.user_data.get('broadcast_target_value')
-
-    # Store all information needed for confirmation and sending
-    context.user_data['broadcast_content'] = {
-        'text': text,
-        'media_file_id': media_file_id,
-        'media_type': media_type,
-        'target_type': target_type,
-        'target_value': target_value
-    }
-    context.user_data.pop('state', None) # Clear state after receiving content
-
-    # --- Build Confirmation Message ---
-    confirm_title = lang_data.get("broadcast_confirm_title", "📢 Confirm Broadcast")
-    target_desc = lang_data.get("broadcast_confirm_target_all", "Target: All Users") # Default
-    if target_type == 'city':
-        target_desc = lang_data.get("broadcast_confirm_target_city", "Target: Last Purchase in {city}").format(city=target_value)
-    elif target_type == 'status':
-        target_desc = lang_data.get("broadcast_confirm_target_status", "Target: Status - {status}").format(status=target_value)
-    elif target_type == 'inactive':
-        target_desc = lang_data.get("broadcast_confirm_target_inactive", "Target: Inactive >= {days} days").format(days=target_value)
-
-    preview_label = lang_data.get("broadcast_confirm_preview", "Preview:")
-    preview_msg = f"{confirm_title}\n\n{target_desc}\n\n{preview_label}\n"
-    if media_file_id: preview_msg += f"{media_type.capitalize()} attached\n"
-    text_preview = text[:500] + ('...' if len(text) > 500 else '')
-    preview_msg += text_preview if text else "(No text)"
-    preview_msg += f"\n\n{lang_data.get('broadcast_confirm_ask', 'Send this message?')}"
-
-    keyboard = [
-        [InlineKeyboardButton("✅ Yes, Send Broadcast", callback_data="confirm_broadcast")],
-        [InlineKeyboardButton("❌ No, Cancel", callback_data="cancel_broadcast")]
-    ]
-    await send_message_with_retry(context.bot, chat_id, preview_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-
-
+# --- Message Handler for Broadcast Inactive Days ---
 async def handle_adm_broadcast_inactive_days_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handles the admin entering the number of days for inactive broadcast."""
     user_id = update.effective_user.id
@@ -2740,3 +2574,53 @@ async def handle_adm_broadcast_inactive_days_message(update: Update, context: Co
     except ValueError:
         await send_message_with_retry(context.bot, chat_id, invalid_days_msg, parse_mode=None)
         return # Keep state
+
+# --- Message Handler for Broadcast Content ---
+async def handle_adm_broadcast_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles receiving the message content for the broadcast, AFTER target is set."""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    if user_id != ADMIN_ID: return
+    if context.user_data.get("state") != 'awaiting_broadcast_message': return
+    if not update.message: return
+
+    lang = context.user_data.get("lang", "en")
+    lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
+
+    text = (update.message.text or update.message.caption or "").strip()
+    media_file_id, media_type = None, None
+    if update.message.photo: media_file_id, media_type = update.message.photo[-1].file_id, "photo"
+    elif update.message.video: media_file_id, media_type = update.message.video.file_id, "video"
+    elif update.message.animation: media_file_id, media_type = update.message.animation.file_id, "gif"
+
+    if not text and not media_file_id:
+        await send_message_with_retry(context.bot, chat_id, "Broadcast message cannot be empty. Please send text or media.", parse_mode=None)
+        return
+
+    target_type = context.user_data.get('broadcast_target_type', 'all')
+    target_value = context.user_data.get('broadcast_target_value')
+
+    context.user_data['broadcast_content'] = {
+        'text': text, 'media_file_id': media_file_id, 'media_type': media_type,
+        'target_type': target_type, 'target_value': target_value
+    }
+    context.user_data.pop('state', None)
+
+    confirm_title = lang_data.get("broadcast_confirm_title", "📢 Confirm Broadcast")
+    target_desc = lang_data.get("broadcast_confirm_target_all", "Target: All Users")
+    if target_type == 'city': target_desc = lang_data.get("broadcast_confirm_target_city", "Target: Last Purchase in {city}").format(city=target_value)
+    elif target_type == 'status': target_desc = lang_data.get("broadcast_confirm_target_status", "Target: Status - {status}").format(status=target_value)
+    elif target_type == 'inactive': target_desc = lang_data.get("broadcast_confirm_target_inactive", "Target: Inactive >= {days} days").format(days=target_value)
+
+    preview_label = lang_data.get("broadcast_confirm_preview", "Preview:")
+    preview_msg = f"{confirm_title}\n\n{target_desc}\n\n{preview_label}\n"
+    if media_file_id: preview_msg += f"{media_type.capitalize()} attached\n"
+    text_preview = text[:500] + ('...' if len(text) > 500 else '')
+    preview_msg += text_preview if text else "(No text)"
+    preview_msg += f"\n\n{lang_data.get('broadcast_confirm_ask', 'Send this message?')}"
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Yes, Send Broadcast", callback_data="confirm_broadcast")],
+        [InlineKeyboardButton("❌ No, Cancel", callback_data="cancel_broadcast")]
+    ]
+    await send_message_with_retry(context.bot, chat_id, preview_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
