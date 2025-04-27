@@ -235,9 +235,7 @@ async def handle_select_refill_crypto(update: Update, context: ContextTypes.DEFA
 
     refill_eur_amount_decimal = Decimal(str(refill_eur_amount_float))
 
-    # Get translated texts
     preparing_invoice_msg = lang_data.get("preparing_invoice", "⏳ Preparing your payment invoice...")
-    error_preparing_payment_msg = lang_data.get("error_preparing_payment", "❌ An error occurred while preparing the payment. Please try again later.")
     failed_invoice_creation_msg = lang_data.get("failed_invoice_creation", "❌ Failed to create payment invoice. Please try again later or contact support.")
     error_nowpayments_api_msg = lang_data.get("error_nowpayments_api", "❌ Payment API Error: Could not create payment. Please try again later or contact support.")
     error_invalid_response_msg = lang_data.get("error_invalid_nowpayments_response", "❌ Payment API Error: Invalid response received. Please contact support.")
@@ -245,10 +243,8 @@ async def handle_select_refill_crypto(update: Update, context: ContextTypes.DEFA
     error_pending_db_msg = lang_data.get("payment_pending_db_error", "❌ Database Error: Could not record pending payment. Please contact support.")
     error_amount_too_low_api_msg = lang_data.get("payment_amount_too_low_api", "❌ Payment Amount Too Low: The equivalent of {target_eur_amount} EUR in {currency} ({crypto_amount}) is below the minimum required by the payment provider ({min_amount} {currency}). Please try a higher EUR amount.")
     error_min_amount_fetch_msg = lang_data.get("error_min_amount_fetch", "❌ Error: Could not retrieve minimum payment amount for {currency}. Please try again later or select a different currency.")
-    # Modified error for estimate failures
     error_estimate_failed_msg = lang_data.get("error_estimate_failed", "❌ Error: Could not estimate crypto amount. Please try again or select a different currency.")
     error_estimate_currency_not_found_msg = lang_data.get("error_estimate_currency_not_found", "❌ Error: Currency {currency} not supported for estimation. Please select a different currency.")
-
     back_to_profile_button = lang_data.get("back_profile_button", "Back to Profile")
     back_button_markup = InlineKeyboardMarkup([[InlineKeyboardButton(f"⬅️ {back_to_profile_button}", callback_data="profile")]])
 
@@ -258,16 +254,13 @@ async def handle_select_refill_crypto(update: Update, context: ContextTypes.DEFA
         if "message is not modified" not in str(e).lower(): logger.warning(f"Couldn't edit message in handle_select_refill_crypto: {e}")
         await query.answer("Preparing...")
 
-    # --- Call Refactored NOWPayments Function ---
     payment_result = await create_nowpayments_payment(user_id, refill_eur_amount_decimal, selected_asset_code)
 
-    # --- Handle Result ---
     if 'error' in payment_result:
         error_code = payment_result['error']
         logger.error(f"Failed to create NOWPayments invoice for user {user_id}: {error_code} - Details: {payment_result}")
 
-        # Map error codes to user-friendly messages
-        error_message_to_user = failed_invoice_creation_msg # Default
+        error_message_to_user = failed_invoice_creation_msg # Default error
         if error_code == 'estimate_failed': error_message_to_user = error_estimate_failed_msg
         elif error_code == 'estimate_currency_not_found': error_message_to_user = error_estimate_currency_not_found_msg.format(currency=payment_result.get('currency', selected_asset_code.upper()))
         elif error_code == 'min_amount_fetch_error': error_message_to_user = error_min_amount_fetch_msg.format(currency=payment_result.get('currency', selected_asset_code.upper()))
@@ -285,17 +278,16 @@ async def handle_select_refill_crypto(update: Update, context: ContextTypes.DEFA
                  min_amount=min_amount_val
              )
         elif error_code in ['api_timeout', 'api_request_failed', 'api_unexpected_error', 'internal_server_error', 'internal_estimate_error']:
-            error_message_to_user = error_nowpayments_api_msg # Generic API error for user
+            error_message_to_user = error_nowpayments_api_msg
 
         try: await query.edit_message_text(error_message_to_user, reply_markup=back_button_markup, parse_mode=None)
         except Exception as edit_e: logger.error(f"Failed to edit message with invoice creation error: {edit_e}"); await send_message_with_retry(context.bot, chat_id, error_message_to_user, reply_markup=back_button_markup, parse_mode=None)
         context.user_data.pop('refill_eur_amount', None)
         context.user_data.pop('state', None) # Reset state on error
     else:
-        # Success - Display the invoice details
         logger.info(f"NOWPayments invoice created successfully for user {user_id}. Payment ID: {payment_result.get('payment_id')}")
-        context.user_data.pop('refill_eur_amount', None) # Clear intermediate value
-        context.user_data.pop('state', None) # Reset state
+        context.user_data.pop('refill_eur_amount', None)
+        context.user_data.pop('state', None)
         await display_nowpayments_invoice(update, context, payment_result)
 
 
@@ -306,16 +298,13 @@ async def display_nowpayments_invoice(update: Update, context: ContextTypes.DEFA
     chat_id = query.message.chat_id
     lang = context.user_data.get("lang", "en")
     lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
-    final_msg = "Error displaying invoice." # Fallback message
+    final_msg = "Error displaying invoice."
 
     try:
-        # Extract required data safely
         pay_address = payment_data.get('pay_address')
-        # Use the final pay_amount from the payment creation response
         pay_amount_str = payment_data.get('pay_amount')
         pay_currency = payment_data.get('pay_currency', 'N/A').upper()
         payment_id = payment_data.get('payment_id', 'N/A')
-        # Get original target EUR amount added in create_nowpayments_payment
         target_eur_orig = payment_data.get('target_eur_amount_orig')
 
         if not pay_address or not pay_amount_str:
@@ -324,26 +313,20 @@ async def display_nowpayments_invoice(update: Update, context: ContextTypes.DEFA
 
         pay_amount_decimal = Decimal(pay_amount_str)
         pay_amount_display = '{:f}'.format(pay_amount_decimal.normalize())
-
         target_eur_display = format_currency(Decimal(str(target_eur_orig))) if target_eur_orig else "N/A"
 
-        # Get translated texts
         invoice_title_refill = lang_data.get("invoice_title_refill", "*Top\\-Up Invoice Created*")
-        # Changed label to reflect it's the specific amount to send now
-        amount_label = lang_data.get("amount_label", "*Amount:*") # Reusing this label
+        amount_label = lang_data.get("amount_label", "*Amount:*")
         payment_address_label = lang_data.get("payment_address_label", "*Payment Address:*")
-        send_warning_template = lang_data.get("send_warning_template", "⚠️ *Important:* Send *exactly* this amount of {asset} to this address\\.") # Adjusted warning
-        overpayment_note = lang_data.get("overpayment_note", "ℹ️ _Sending more than this amount is okay\\! Your balance will be credited based on the amount received after network confirmation\\._") # Kept this note
+        send_warning_template = lang_data.get("send_warning_template", "⚠️ *Important:* Send *exactly* this amount of {asset} to this address\\.")
+        overpayment_note = lang_data.get("overpayment_note", "ℹ️ _Sending more than this amount is okay\\! Your balance will be credited based on the amount received after network confirmation\\._")
         back_to_profile_button = lang_data.get("back_profile_button", "Back to Profile")
 
-        # Escape dynamic parts
         escaped_target_eur = helpers.escape_markdown(target_eur_display, version=2)
         escaped_pay_amount = helpers.escape_markdown(pay_amount_display, version=2)
         escaped_currency = helpers.escape_markdown(pay_currency, version=2)
         escaped_address = helpers.escape_markdown(pay_address, version=2)
 
-        # Construct message
-        # Show the exact 'pay_amount' from the invoice response
         msg = f"""{invoice_title_refill}
 
 _{helpers.escape_markdown(f"(Requested: {target_eur_display} EUR)", version=2)}_
@@ -358,16 +341,13 @@ Please send the following amount:
 
 {send_warning_template.format(asset=escaped_currency)}
 
-""" # Removed expires_at and confirmation_note lines
-
+"""
         final_msg = msg.strip()
         keyboard = [[InlineKeyboardButton(f"⬅️ {back_to_profile_button}", callback_data="profile")]]
 
         await query.edit_message_text(
-            final_msg,
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode=ParseMode.MARKDOWN_V2,
-            disable_web_page_preview=True
+            final_msg, reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN_V2, disable_web_page_preview=True
         )
     except (ValueError, KeyError, TypeError) as e:
         logger.error(f"Error formatting or displaying NOWPayments invoice: {e}. Data: {payment_data}", exc_info=True)
@@ -479,9 +459,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
     db_update_successful = False
     processed_product_ids = []
     purchases_to_insert = []
-    # Convert Decimal to float for DB interactions
     amount_float_to_deduct = float(amount_to_deduct)
-
     balance_changed_error = lang_data.get("balance_changed_error", "❌ Transaction failed: Balance changed.")
     order_failed_all_sold_out_balance = lang_data.get("order_failed_all_sold_out_balance", "❌ Order Failed: All items sold out.")
     error_processing_purchase_contact_support = lang_data.get("error_processing_purchase_contact_support", "❌ Error processing purchase. Contact support.")
@@ -493,7 +471,6 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
         # 1. Verify balance
         c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
         current_balance_result = c.fetchone()
-        # Compare Decimal with float from DB
         if not current_balance_result or Decimal(str(current_balance_result['balance'])) < amount_to_deduct:
              logger.warning(f"Insufficient balance user {user_id}. Needed: {amount_to_deduct:.2f}")
              conn.rollback()
@@ -514,10 +491,9 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
             details = product_db_details.get(product_id)
             if not details: sold_out_during_process.append(f"Item ID {product_id} (unavailable)"); continue
             res_update = c.execute("UPDATE products SET reserved = MAX(0, reserved - 1) WHERE id = ?", (product_id,))
-            if res_update.rowcount == 0: logger.warning(f"Failed reserve decr. P{product_id} user {user_id}."); sold_out_during_process.append(f"{details.get('name', '?')} {details.get('size', '?')}"); continue # Rollback reservation
+            if res_update.rowcount == 0: logger.warning(f"Failed reserve decr. P{product_id} user {user_id}."); sold_out_during_process.append(f"{details.get('name', '?')} {details.get('size', '?')}"); continue
             avail_update = c.execute("UPDATE products SET available = available - 1 WHERE id = ? AND available > 0", (product_id,))
-            if avail_update.rowcount == 0: logger.error(f"Failed available decr. P{product_id} user {user_id}. Race?"); sold_out_during_process.append(f"{details.get('name', '?')} {details.get('size', '?')}"); c.execute("UPDATE products SET reserved = reserved + 1 WHERE id = ?", (product_id,)); continue # Rollback reservation
-            # Ensure Decimal prices from DB are converted to float for insert if needed
+            if avail_update.rowcount == 0: logger.error(f"Failed available decr. P{product_id} user {user_id}. Race?"); sold_out_during_process.append(f"{details.get('name', '?')} {details.get('size', '?')}"); c.execute("UPDATE products SET reserved = reserved + 1 WHERE id = ?", (product_id,)); continue
             item_price_float = float(Decimal(str(details['price'])))
             purchases_to_insert.append((user_id, product_id, details['name'], details['product_type'], details['size'], item_price_float, details['city'], details['district'], purchase_time_iso))
             processed_product_ids.append(product_id)
@@ -548,7 +524,6 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
     if db_update_successful:
         media_details = defaultdict(list)
         if processed_product_ids:
-            # Fetch Media Details
             conn_media = None
             try:
                 conn_media = get_db_connection()
@@ -560,7 +535,6 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
             finally:
                 if conn_media: conn_media.close()
 
-            # Send Confirmation and Details
             success_title = lang_data.get("purchase_success", "🎉 Purchase Complete! Pickup details below:")
             await send_message_with_retry(context.bot, chat_id, success_title, parse_mode=None)
 
@@ -571,18 +545,16 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                 item_text = item_details[0]['text'] or "(No specific pickup details provided)"
                 item_header = f"--- Item: {item_name} {item_size} ---"
 
-                # --- MODIFIED Media Sending Logic ---
                 media_sent = False
                 caption_sent_with_media = False
-                opened_files = [] # To track opened files for cleanup
+                opened_files = []
 
                 if prod_id in media_details:
                     media_list = media_details[prod_id]
                     if media_list:
                         media_group_to_send = []
-                        # Combine header and main text for the caption
                         combined_caption = f"{item_header}\n\n{item_text}"
-                        if len(combined_caption) > 1024: # Telegram caption limit
+                        if len(combined_caption) > 1024:
                             combined_caption = combined_caption[:1021] + "..."
                             logger.warning(f"Combined caption for P{prod_id} truncated to 1024 chars.")
 
@@ -591,27 +563,25 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                                 file_id = media_item.get('telegram_file_id')
                                 media_type = media_item.get('media_type')
                                 file_path = media_item.get('file_path')
-                                # Attach caption ONLY to the first item
                                 caption_to_use = combined_caption if i == 0 else None
                                 input_media = None
                                 file_handle = None
 
                                 try:
-                                    if file_id: # Prefer file_id if available
+                                    if file_id:
                                         if media_type == 'photo': input_media = InputMediaPhoto(media=file_id, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'video': input_media = InputMediaVideo(media=file_id, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'gif': input_media = InputMediaAnimation(media=file_id, caption=caption_to_use, parse_mode=None)
                                         else: logger.warning(f"Unsupported media type '{media_type}' with file_id P{prod_id}"); continue
-                                    elif file_path and await asyncio.to_thread(os.path.exists, file_path): # Fallback to file_path
+                                    elif file_path and await asyncio.to_thread(os.path.exists, file_path):
                                         logger.info(f"Opening media file {file_path} P{prod_id} for sending")
                                         file_handle = await asyncio.to_thread(open, file_path, 'rb')
-                                        opened_files.append(file_handle) # Track for closing
+                                        opened_files.append(file_handle)
                                         if media_type == 'photo': input_media = InputMediaPhoto(media=file_handle, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'video': input_media = InputMediaVideo(media=file_handle, caption=caption_to_use, parse_mode=None)
                                         elif media_type == 'gif': input_media = InputMediaAnimation(media=file_handle, caption=caption_to_use, parse_mode=None)
                                         else:
                                             logger.warning(f"Unsupported media type '{media_type}' from path {file_path}")
-                                            # Clean up immediately if skipped
                                             await asyncio.to_thread(file_handle.close)
                                             opened_files.remove(file_handle)
                                             continue
@@ -621,47 +591,40 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
 
                                 except Exception as prep_e:
                                     logger.error(f"Error preparing media item {i+1} P{prod_id}: {prep_e}", exc_info=True)
-                                    # Clean up file handle if opened during failed preparation
                                     if file_handle and file_handle in opened_files:
                                         await asyncio.to_thread(file_handle.close)
                                         opened_files.remove(file_handle)
 
-                            # Send the group if we have items
                             if media_group_to_send:
                                 await context.bot.send_media_group(chat_id, media=media_group_to_send, connect_timeout=20, read_timeout=20)
                                 logger.info(f"Sent media group with {len(media_group_to_send)} items for P{prod_id} to user {user_id}.")
                                 media_sent = True
-                                # Check if the first item (which would have the caption) was successfully prepared and included
                                 if media_group_to_send[0].caption:
                                     caption_sent_with_media = True
 
                         except telegram_error.TelegramError as tg_err:
                             logger.error(f"TelegramError sending media group for P{prod_id} to user {user_id}: {tg_err}")
-                            # If sending fails, ensure the caption is sent separately later if it existed
                             if media_group_to_send and media_group_to_send[0].caption:
-                                 caption_sent_with_media = False # Sending failed, caption wasn't successfully sent with media
+                                 caption_sent_with_media = False
                         except Exception as e:
                             logger.error(f"Unexpected error sending media group for P{prod_id} user {user_id}: {e}", exc_info=True)
                             if media_group_to_send and media_group_to_send[0].caption:
                                  caption_sent_with_media = False
+                        finally:
+                             # Ensure all opened files are closed
+                            for f in opened_files:
+                                try:
+                                    if not f.closed:
+                                        await asyncio.to_thread(f.close)
+                                        logger.debug(f"Closed file handle during cleanup: {getattr(f, 'name', 'unknown')}")
+                                except Exception as close_e:
+                                    logger.warning(f"Error closing file handle '{getattr(f, 'name', 'unknown')}' during cleanup: {close_e}")
 
-                finally:
-                    # Ensure all opened files are closed
-                    for f in opened_files:
-                        try:
-                            if not f.closed:
-                                await asyncio.to_thread(f.close)
-                                logger.debug(f"Closed file handle during cleanup: {getattr(f, 'name', 'unknown')}")
-                        except Exception as close_e:
-                            logger.warning(f"Error closing file handle '{getattr(f, 'name', 'unknown')}' during cleanup: {close_e}")
-
-                # Send Text Details ONLY if no media was sent OR if the caption wasn't successfully sent with the media
+                # Send Text Details ONLY if no media was sent OR if the caption wasn't successfully sent
                 if not media_sent or not caption_sent_with_media:
-                    text_to_send = item_text if media_sent else f"{item_header}\n\n{item_text}" # Include header if no media sent at all
-                    if not text_to_send: text_to_send = f"(No details for {item_name} {item_size})" # Fallback
+                    text_to_send = item_text if media_sent else f"{item_header}\n\n{item_text}"
+                    if not text_to_send: text_to_send = f"(No details for {item_name} {item_size})"
                     await send_message_with_retry(context.bot, chat_id, text_to_send, parse_mode=None)
-                # --- End of Modified block ---
-
 
                 # Delete Product Record and Media Directory
                 conn_del = None
@@ -674,9 +637,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                     if delete_result.rowcount > 0:
                         logger.info(f"Successfully deleted purchased product record ID {prod_id}.")
                         media_dir_to_delete = os.path.join(MEDIA_DIR, str(prod_id))
-                        # Use await asyncio.to_thread for os.path.exists
                         if await asyncio.to_thread(os.path.exists, media_dir_to_delete):
-                            # Keep scheduling deletion in background
                             asyncio.create_task(asyncio.to_thread(shutil.rmtree, media_dir_to_delete, ignore_errors=True))
                             logger.info(f"Scheduled deletion of media dir: {media_dir_to_delete}")
                     else: logger.warning(f"Product record ID {prod_id} not found for deletion.")
@@ -695,7 +656,6 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
         keyboard = [[InlineKeyboardButton(f"✍️ {leave_review_button}", callback_data="leave_review_now")]]
         await send_message_with_retry(context.bot, chat_id, "\n\n".join(final_message_parts), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
-        # Clear user context
         context.user_data['basket'] = []
         context.user_data.pop('applied_discount', None)
         return True
@@ -732,6 +692,7 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
     error_occurred = False # Flag
 
     # --- Fetch data and calculate ---
+    # This block handles potential errors during data retrieval and calculation
     try:
         conn = get_db_connection()
         c = conn.cursor()
@@ -740,7 +701,7 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
         if not product_ids_in_basket:
              await query.answer("Basket empty after validation.", show_alert=True)
              await user.handle_view_basket(update, context) # Use await
-             if conn: conn.close()
+             # Connection will be closed in finally
              return
 
         placeholders = ','.join('?' for _ in product_ids_in_basket)
@@ -763,7 +724,7 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
              keyboard_back = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
              try: await query.edit_message_text("❌ Error: All items unavailable.", reply_markup=InlineKeyboardMarkup(keyboard_back), parse_mode=None)
              except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, "❌ Error: All items unavailable.", reply_markup=InlineKeyboardMarkup(keyboard_back), parse_mode=None)
-             if conn: conn.close()
+             # Connection will be closed in finally
              return
 
         final_total = original_total
@@ -782,7 +743,7 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         if final_total < Decimal('0.0'):
              await query.answer("Cannot process negative amount.", show_alert=True)
-             if conn: conn.close()
+             # Connection will be closed in finally
              return
 
         c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
@@ -791,13 +752,14 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
     except (sqlite3.Error, Exception) as e: # Catch potential errors here
         logger.error(f"Error during payment confirm data processing user {user_id}: {e}", exc_info=True)
-        error_occurred = True
+        error_occurred = True # Set flag
         kb = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
         try: await query.edit_message_text("❌ Error preparing payment.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
         except Exception as edit_err: logger.error(f"Failed to edit message in error handler: {edit_err}")
+        # Let finally close the connection
     finally:
         if conn:
-            conn.close() # Ensure connection is closed even on error during processing
+            conn.close() # Ensure connection is closed
             logger.debug("DB connection closed in handle_confirm_pay.")
 
     # --- Proceed only if no error occurred during data processing ---
