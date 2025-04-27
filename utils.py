@@ -195,7 +195,7 @@ LANGUAGES = {
         "discount_removed_answer": "Discount removed.",
         "no_discount_answer": "No discount applied.",
         "send_text_please": "Please send the discount code as text.",
-        "error_calculating_total": "Error calculating basket total.",
+        "error_calculating_total": "Error calculating total.",
         "returning_to_basket": "Returning to basket.",
         "basket_empty_no_discount": "Your basket is empty. Cannot apply discount code.",
 
@@ -305,7 +305,7 @@ LANGUAGES = {
         "admin_invalid_emoji": "❌ Invalid input. Please send a single emoji.",
         "admin_type_emoji_updated": "✅ Emoji updated successfully for {type_name}!",
         "admin_edit_type_menu": "🧩 Editing Type: {type_name}\n\nCurrent Emoji: {emoji}\n\nWhat would you like to do?",
-        # --- NEW Broadcast Translations ---
+        # --- Broadcast Translations ---
         "broadcast_select_target": "📢 Broadcast Message\n\nSelect the target audience:",
         "broadcast_target_all": "👥 All Users",
         "broadcast_target_city": "🏙️ By Last Purchased City",
@@ -328,6 +328,31 @@ LANGUAGES = {
         "broadcast_confirm_preview": "Preview:",
         "broadcast_confirm_ask": "Send this message?",
         "broadcast_no_users_found_target": "⚠️ Broadcast Warning: No users found matching the target criteria.",
+        # --- NEW User Management Translations ---
+        "manage_users_title": "👤 Manage Users",
+        "manage_users_prompt": "Select a user to view details or manage:",
+        "manage_users_no_users": "No users found.",
+        "view_user_profile_title": "👤 User Profile: @{username} (ID: {user_id})",
+        "user_profile_status": "Status",
+        "user_profile_balance": "Balance",
+        "user_profile_purchases": "Total Purchases",
+        "user_profile_banned": "Banned Status",
+        "user_profile_is_banned": "Yes 🚫",
+        "user_profile_not_banned": "No ✅",
+        "user_profile_button_adjust_balance": "💰 Adjust Balance",
+        "user_profile_button_ban": "🚫 Ban User",
+        "user_profile_button_unban": "✅ Unban User",
+        "user_profile_button_back_list": "⬅️ Back to User List",
+        "adjust_balance_prompt": "Reply with the amount to adjust balance for @{username} (ID: {user_id}).\nUse a positive number to add (e.g., 10.50) or a negative number to subtract (e.g., -5.00).",
+        "adjust_balance_reason_prompt": "Please reply with a brief reason for this balance adjustment ({amount} EUR):",
+        "adjust_balance_invalid_amount": "❌ Invalid amount. Please enter a non-zero number (e.g., 10.5 or -5).",
+        "adjust_balance_reason_empty": "❌ Reason cannot be empty. Please provide a reason.",
+        "adjust_balance_success": "✅ Balance adjusted successfully for @{username}. New balance: {new_balance} EUR.",
+        "adjust_balance_db_error": "❌ Database error adjusting balance.",
+        "ban_success": "🚫 User @{username} (ID: {user_id}) has been banned.",
+        "unban_success": "✅ User @{username} (ID: {user_id}) has been unbanned.",
+        "ban_db_error": "❌ Database error updating ban status.",
+        "ban_cannot_ban_admin": "❌ Cannot ban the primary admin.",
     },
     # --- Lithuanian ---
     "lt": {
@@ -356,6 +381,31 @@ LANGUAGES = {
         "broadcast_confirm_preview": "Peržiūra:",
         "broadcast_confirm_ask": "Siųsti šią žinutę?",
         "broadcast_no_users_found_target": "⚠️ Transliacijos Įspėjimas: Nerasta vartotojų, atitinkančių nurodytus kriterijus.",
+        # --- NEW User Management Translations ---
+        "manage_users_title": "👤 Vartotojų Valdymas",
+        "manage_users_prompt": "Pasirinkite vartotoją peržiūrai ar valdymui:",
+        "manage_users_no_users": "Vartotojų nerasta.",
+        "view_user_profile_title": "👤 Vartotojo Profilis: @{username} (ID: {user_id})",
+        "user_profile_status": "Būsena",
+        "user_profile_balance": "Balansas",
+        "user_profile_purchases": "Viso Pirkimų",
+        "user_profile_banned": "Užblokavimo Būsena",
+        "user_profile_is_banned": "Taip 🚫",
+        "user_profile_not_banned": "Ne ✅",
+        "user_profile_button_adjust_balance": "💰 Koreguoti Balansą",
+        "user_profile_button_ban": "🚫 Užblokuoti Vartotoją",
+        "user_profile_button_unban": "✅ Atblokuoti Vartotoją",
+        "user_profile_button_back_list": "⬅️ Atgal į Vartotojų Sąrašą",
+        "adjust_balance_prompt": "Atsakykite suma, kuria koreguoti vartotojo @{username} (ID: {user_id}) balansą.\nNaudokite teigiamą skaičių pridėjimui (pvz., 10.50) arba neigiamą atėmimui (pvz., -5.00).",
+        "adjust_balance_reason_prompt": "Prašome atsakyti trumpa šio balanso koregavimo ({amount} EUR) priežastimi:",
+        "adjust_balance_invalid_amount": "❌ Neteisinga suma. Įveskite nenulinį skaičių (pvz., 10.5 arba -5).",
+        "adjust_balance_reason_empty": "❌ Priežastis negali būti tuščia. Prašome nurodyti priežastį.",
+        "adjust_balance_success": "✅ Vartotojo @{username} balansas sėkmingai pakoreguotas. Naujas balansas: {new_balance} EUR.",
+        "adjust_balance_db_error": "❌ Duomenų bazės klaida koreguojant balansą.",
+        "ban_success": "🚫 Vartotojas @{username} (ID: {user_id}) buvo užblokuotas.",
+        "unban_success": "✅ Vartotojas @{username} (ID: {user_id}) buvo atblokuotas.",
+        "ban_db_error": "❌ Duomenų bazės klaida atnaujinant blokavimo būseną.",
+        "ban_cannot_ban_admin": "❌ Negalima užblokuoti pagrindinio administratoriaus.",
     },
     # --- Russian ---
     "ru": {
@@ -384,6 +434,31 @@ LANGUAGES = {
         "broadcast_confirm_preview": "Предпросмотр:",
         "broadcast_confirm_ask": "Отправить это сообщение?",
         "broadcast_no_users_found_target": "⚠️ Предупреждение Рассылки: Пользователи, соответствующие критериям, не найдены.",
+        # --- NEW User Management Translations ---
+        "manage_users_title": "👤 Управление Пользователями",
+        "manage_users_prompt": "Выберите пользователя для просмотра или управления:",
+        "manage_users_no_users": "Пользователи не найдены.",
+        "view_user_profile_title": "👤 Профиль Пользователя: @{username} (ID: {user_id})",
+        "user_profile_status": "Статус",
+        "user_profile_balance": "Баланс",
+        "user_profile_purchases": "Всего Покупок",
+        "user_profile_banned": "Статус Блокировки",
+        "user_profile_is_banned": "Да 🚫",
+        "user_profile_not_banned": "Нет ✅",
+        "user_profile_button_adjust_balance": "💰 Изменить Баланс",
+        "user_profile_button_ban": "🚫 Заблокировать",
+        "user_profile_button_unban": "✅ Разблокировать",
+        "user_profile_button_back_list": "⬅️ Назад к Списку",
+        "adjust_balance_prompt": "Ответьте суммой для изменения баланса @{username} (ID: {user_id}).\nИспользуйте положительное число для добавления (напр., 10.50) или отрицательное для вычитания (напр., -5.00).",
+        "adjust_balance_reason_prompt": "Пожалуйста, ответьте краткой причиной этого изменения баланса ({amount} EUR):",
+        "adjust_balance_invalid_amount": "❌ Неверная сумма. Введите ненулевое число (напр., 10.5 или -5).",
+        "adjust_balance_reason_empty": "❌ Причина не может быть пустой. Укажите причину.",
+        "adjust_balance_success": "✅ Баланс пользователя @{username} успешно изменен. Новый баланс: {new_balance} EUR.",
+        "adjust_balance_db_error": "❌ Ошибка базы данных при изменении баланса.",
+        "ban_success": "🚫 Пользователь @{username} (ID: {user_id}) заблокирован.",
+        "unban_success": "✅ Пользователь @{username} (ID: {user_id}) разблокирован.",
+        "ban_db_error": "❌ Ошибка базы данных при обновлении статуса блокировки.",
+        "ban_cannot_ban_admin": "❌ Невозможно заблокировать главного администратора.",
     }
 }
 # ==============================================================
@@ -429,12 +504,20 @@ def init_db():
     try:
         with get_db_connection() as conn:
             c = conn.cursor()
-            # users table
+            # --- users table ---
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY, username TEXT, balance REAL DEFAULT 0.0,
                 total_purchases INTEGER DEFAULT 0, basket TEXT DEFAULT '',
                 language TEXT DEFAULT 'en', theme TEXT DEFAULT 'default'
             )''')
+            # Add is_banned column if it doesn't exist
+            try:
+                c.execute("ALTER TABLE users ADD COLUMN is_banned INTEGER DEFAULT 0")
+                logger.info("Added 'is_banned' column to users table.")
+            except sqlite3.OperationalError as alter_e:
+                 if "duplicate column name: is_banned" in str(alter_e): pass # Ignore if already exists
+                 else: raise # Reraise other errors
+
             # cities table
             c.execute('''CREATE TABLE IF NOT EXISTS cities (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL
@@ -507,6 +590,20 @@ def init_db():
                  if "duplicate column name: expected_crypto_amount" in str(alter_e): pass
                  else: raise
 
+            # --- NEW: admin_log table ---
+            c.execute('''CREATE TABLE IF NOT EXISTS admin_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                admin_id INTEGER NOT NULL,
+                target_user_id INTEGER,
+                action TEXT NOT NULL,
+                reason TEXT,
+                amount_change REAL DEFAULT NULL,
+                old_value TEXT,
+                new_value TEXT
+            )''')
+            # --------------------------
+
             # Create Indices
             c.execute("CREATE INDEX IF NOT EXISTS idx_product_media_product_id ON product_media(product_id)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(purchase_date)")
@@ -516,6 +613,8 @@ def init_db():
             c.execute("CREATE INDEX IF NOT EXISTS idx_reviews_user ON reviews(user_id)")
             c.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_discount_code_unique ON discount_codes(code)")
             c.execute("CREATE INDEX IF NOT EXISTS idx_pending_deposits_user_id ON pending_deposits(user_id)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_admin_log_timestamp ON admin_log(timestamp)") # Index for admin log
+            c.execute("CREATE INDEX IF NOT EXISTS idx_users_banned ON users(is_banned)") # Index for banned status
 
             conn.commit()
             logger.info(f"Database schema at {DATABASE_PATH} initialized/verified successfully.")
@@ -853,7 +952,7 @@ async def handle_coming_soon(update: Update, context: ContextTypes.DEFAULT_TYPE,
         except Exception as e: logger.error(f"Error answering 'coming soon' callback: {e}")
 
 
-# --- NEW: Fetch User IDs for Broadcast (Synchronous) ---
+# --- Fetch User IDs for Broadcast (Synchronous) ---
 def fetch_user_ids_for_broadcast(target_type: str, target_value: str | int | None = None) -> list[int]:
     """Fetches user IDs based on broadcast target criteria."""
     user_ids = []
@@ -942,6 +1041,33 @@ def fetch_user_ids_for_broadcast(target_type: str, target_value: str | int | Non
         if conn: conn.close()
 
     return user_ids
+
+
+# --- NEW: Admin Action Logging (Synchronous) ---
+def log_admin_action(admin_id: int, action: str, target_user_id: int | None = None, reason: str | None = None, amount_change: float | None = None, old_value=None, new_value=None):
+    """Logs an administrative action to the admin_log table."""
+    try:
+        with get_db_connection() as conn:
+            c = conn.cursor()
+            c.execute("""
+                INSERT INTO admin_log (timestamp, admin_id, target_user_id, action, reason, amount_change, old_value, new_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                datetime.now(timezone.utc).isoformat(),
+                admin_id,
+                target_user_id,
+                action,
+                reason,
+                amount_change,
+                str(old_value) if old_value is not None else None,
+                str(new_value) if new_value is not None else None
+            ))
+            conn.commit()
+            logger.info(f"Admin Action Logged: Admin={admin_id}, Action='{action}', Target={target_user_id}, Reason='{reason}', Amount={amount_change}, Old='{old_value}', New='{new_value}'")
+    except sqlite3.Error as e:
+        logger.error(f"Failed to log admin action: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Unexpected error logging admin action: {e}", exc_info=True)
 
 
 # --- Initial Data Load ---
