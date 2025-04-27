@@ -27,7 +27,6 @@ from utils import (
     send_message_with_retry, format_currency, ADMIN_ID,
     LANGUAGES, load_all_data, BASKET_TIMEOUT, MIN_DEPOSIT_EUR,
     NOWPAYMENTS_API_KEY, NOWPAYMENTS_API_URL, WEBHOOK_URL,
-    # get_currency_to_eur_price, # No longer needed here
     format_expiration_time, FEE_ADJUSTMENT,
     add_pending_deposit, remove_pending_deposit, # Make sure add_pending_deposit is imported
     get_nowpayments_min_amount,
@@ -483,7 +482,6 @@ async def process_successful_refill(user_id: int, amount_to_add_eur: Decimal, pa
 
 
 # --- Process Purchase with Balance ---
-# (No changes needed here)
 async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal, basket_snapshot: list, discount_code_used: str | None, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """Handles DB updates when paying with internal balance."""
     chat_id = context._chat_id or context._user_id or user_id
@@ -589,30 +587,98 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                 item_name, item_size = item_details[0]['name'], item_details[0]['size']
                 item_text = item_details[0]['text'] or "(No specific pickup details provided)"
                 item_header = f"--- Item: {item_name} {item_size} ---"
-                sent_media = False
 
-                # Send Media if available
+                # --- MODIFIED Media Sending Logic ---
+                media_sent = False
+                caption_sent_with_media = False
+                opened_files = [] # To track opened files for cleanup
+
                 if prod_id in media_details:
                     media_list = media_details[prod_id]
                     if media_list:
-                        # Simple: Send only the first media item
-                        media_item = media_list[0]
-                        file_id, media_type, file_path = media_item.get('telegram_file_id'), media_item.get('media_type'), media_item.get('file_path')
-                        caption = item_header
-                        try:
-                            if file_id and media_type == 'photo': await context.bot.send_photo(chat_id, photo=file_id, caption=caption, parse_mode=None); sent_media = True
-                            elif file_id and media_type == 'video': await context.bot.send_video(chat_id, video=file_id, caption=caption, parse_mode=None); sent_media = True
-                            elif file_id and media_type == 'gif': await context.bot.send_animation(chat_id, animation=file_id, caption=caption, parse_mode=None); sent_media = True
-                            elif file_path and await asyncio.to_thread(os.path.exists, file_path):
-                                async with await asyncio.to_thread(open, file_path, 'rb') as f:
-                                    if media_type == 'photo': await context.bot.send_photo(chat_id, photo=f, caption=caption, parse_mode=None); sent_media = True
-                                    elif media_type == 'video': await context.bot.send_video(chat_id, video=f, caption=caption, parse_mode=None); sent_media = True
-                                    elif media_type == 'gif': await context.bot.send_animation(chat_id, animation=f, caption=caption, parse_mode=None); sent_media = True
-                            else: logger.warning(f"Media path invalid/missing for P{prod_id}: {file_path}")
-                        except Exception as e: logger.error(f"Error sending media P{prod_id} user {user_id}: {e}", exc_info=True)
+                        media_group_to_send = []
+                        # Combine header and main text for the caption
+                        combined_caption = f"{item_header}\n\n{item_text}"
+                        if len(combined_caption) > 1024: # Telegram caption limit
+                            combined_caption = combined_caption[:1021] + "..."
+                            logger.warning(f"Combined caption for P{prod_id} truncated to 1024 chars.")
 
-                # Always send Text Details separately
-                await send_message_with_retry(context.bot, chat_id, item_text, parse_mode=None)
+                        try:
+                            for i, media_item in enumerate(media_list):
+                                file_id = media_item.get('telegram_file_id')
+                                media_type = media_item.get('media_type')
+                                file_path = media_item.get('file_path')
+                                # Attach caption ONLY to the first item
+                                caption_to_use = combined_caption if i == 0 else None
+                                input_media = None
+                                file_handle = None
+
+                                try:
+                                    if file_id: # Prefer file_id if available
+                                        if media_type == 'photo': input_media = InputMediaPhoto(media=file_id, caption=caption_to_use, parse_mode=None)
+                                        elif media_type == 'video': input_media = InputMediaVideo(media=file_id, caption=caption_to_use, parse_mode=None)
+                                        elif media_type == 'gif': input_media = InputMediaAnimation(media=file_id, caption=caption_to_use, parse_mode=None)
+                                        else: logger.warning(f"Unsupported media type '{media_type}' with file_id P{prod_id}"); continue
+                                    elif file_path and await asyncio.to_thread(os.path.exists, file_path): # Fallback to file_path
+                                        logger.info(f"Opening media file {file_path} P{prod_id} for sending")
+                                        file_handle = await asyncio.to_thread(open, file_path, 'rb')
+                                        opened_files.append(file_handle) # Track for closing
+                                        if media_type == 'photo': input_media = InputMediaPhoto(media=file_handle, caption=caption_to_use, parse_mode=None)
+                                        elif media_type == 'video': input_media = InputMediaVideo(media=file_handle, caption=caption_to_use, parse_mode=None)
+                                        elif media_type == 'gif': input_media = InputMediaAnimation(media=file_handle, caption=caption_to_use, parse_mode=None)
+                                        else:
+                                            logger.warning(f"Unsupported media type '{media_type}' from path {file_path}")
+                                            # Clean up immediately if skipped
+                                            await asyncio.to_thread(file_handle.close)
+                                            opened_files.remove(file_handle)
+                                            continue
+                                    else: logger.warning(f"Media item invalid P{prod_id}: No file_id and path '{file_path}' missing."); continue
+
+                                    if input_media: media_group_to_send.append(input_media)
+
+                                except Exception as prep_e:
+                                    logger.error(f"Error preparing media item {i+1} P{prod_id}: {prep_e}", exc_info=True)
+                                    # Clean up file handle if opened during failed preparation
+                                    if file_handle and file_handle in opened_files:
+                                        await asyncio.to_thread(file_handle.close)
+                                        opened_files.remove(file_handle)
+
+                            # Send the group if we have items
+                            if media_group_to_send:
+                                await context.bot.send_media_group(chat_id, media=media_group_to_send, connect_timeout=20, read_timeout=20)
+                                logger.info(f"Sent media group with {len(media_group_to_send)} items for P{prod_id} to user {user_id}.")
+                                media_sent = True
+                                # Check if the first item (which would have the caption) was successfully prepared and included
+                                if media_group_to_send[0].caption:
+                                    caption_sent_with_media = True
+
+                        except telegram_error.TelegramError as tg_err:
+                            logger.error(f"TelegramError sending media group for P{prod_id} to user {user_id}: {tg_err}")
+                            # If sending fails, ensure the caption is sent separately later if it existed
+                            if media_group_to_send and media_group_to_send[0].caption:
+                                 caption_sent_with_media = False # Sending failed, caption wasn't successfully sent with media
+                        except Exception as e:
+                            logger.error(f"Unexpected error sending media group for P{prod_id} user {user_id}: {e}", exc_info=True)
+                            if media_group_to_send and media_group_to_send[0].caption:
+                                 caption_sent_with_media = False
+
+                finally:
+                    # Ensure all opened files are closed
+                    for f in opened_files:
+                        try:
+                            if not f.closed:
+                                await asyncio.to_thread(f.close)
+                                logger.debug(f"Closed file handle during cleanup: {getattr(f, 'name', 'unknown')}")
+                        except Exception as close_e:
+                            logger.warning(f"Error closing file handle '{getattr(f, 'name', 'unknown')}' during cleanup: {close_e}")
+
+                # Send Text Details ONLY if no media was sent OR if the caption wasn't successfully sent with the media
+                if not media_sent or not caption_sent_with_media:
+                    text_to_send = item_text if media_sent else f"{item_header}\n\n{item_text}" # Include header if no media sent at all
+                    if not text_to_send: text_to_send = f"(No details for {item_name} {item_size})" # Fallback
+                    await send_message_with_retry(context.bot, chat_id, text_to_send, parse_mode=None)
+                # --- End of Modified block ---
+
 
                 # Delete Product Record and Media Directory
                 conn_del = None
