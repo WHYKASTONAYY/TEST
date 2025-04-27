@@ -691,7 +691,9 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
                     if delete_result.rowcount > 0:
                         logger.info(f"Successfully deleted purchased product record ID {prod_id}.")
                         media_dir_to_delete = os.path.join(MEDIA_DIR, str(prod_id))
-                        if os.path.exists(media_dir_to_delete):
+                        # Use await asyncio.to_thread for os.path.exists
+                        if await asyncio.to_thread(os.path.exists, media_dir_to_delete):
+                            # Keep scheduling deletion in background
                             asyncio.create_task(asyncio.to_thread(shutil.rmtree, media_dir_to_delete, ignore_errors=True))
                             logger.info(f"Scheduled deletion of media dir: {media_dir_to_delete}")
                     else: logger.warning(f"Product record ID {prod_id} not found for deletion.")
@@ -728,14 +730,13 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
     lang = context.user_data.get("lang", "en")
     lang_data = LANGUAGES.get(lang, LANGUAGES['en'])
 
-    clear_expired_basket(context, user_id) # Sync call <<<--- THIS CALL IS NOW VALID
+    clear_expired_basket(context, user_id) # Sync call
     basket = context.user_data.get("basket", [])
     applied_discount_info = context.user_data.get('applied_discount')
 
     if not basket:
         await query.answer("Your basket is empty!", show_alert=True)
-        # Use await here as handle_view_basket is async
-        await user.handle_view_basket(update, context)
+        await user.handle_view_basket(update, context) # Use await
         return
 
     # --- Calculate Final Total (using Decimals) ---
@@ -744,14 +745,14 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
     final_total = Decimal('0.0')
     valid_basket_items_snapshot = []
     discount_code_to_use = None
+    user_balance = Decimal('0.0') # Initialize user_balance
 
-    try:
+    try: # <-- Start of the main try block
         product_ids_in_basket = list(set(item['product_id'] for item in basket))
         if not product_ids_in_basket:
              await query.answer("Basket empty after validation.", show_alert=True)
-             # Use await here as handle_view_basket is async
-             await user.handle_view_basket(update, context)
-             return
+             await user.handle_view_basket(update, context) # Use await
+             return # Added return
 
         conn = get_db_connection()
         c = conn.cursor()
@@ -775,7 +776,7 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
              keyboard_back = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
              try: await query.edit_message_text("❌ Error: All items unavailable.", reply_markup=InlineKeyboardMarkup(keyboard_back), parse_mode=None)
              except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, "❌ Error: All items unavailable.", reply_markup=InlineKeyboardMarkup(keyboard_back), parse_mode=None)
-             return
+             return # Return after handling the error message
 
         final_total = original_total
         if applied_discount_info:
@@ -793,61 +794,69 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
                 context.user_data.pop('applied_discount', None)
                 await query.answer("Applied discount became invalid.", show_alert=True)
 
-        if final_total < Decimal('0.0'): await query.answer("Cannot process negative amount.", show_alert=True); return
+        if final_total < Decimal('0.0'):
+             await query.answer("Cannot process negative amount.", show_alert=True)
+             return # Return after handling the error message
 
         # 3. Fetch User Balance
         c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
         balance_result = c.fetchone()
         user_balance = Decimal(str(balance_result['balance'])) if balance_result else Decimal('0.0')
 
+        # --- MOVED THIS BLOCK INSIDE TRY ---
+        # 4. Compare Balance and Proceed
+        logger.info(f"Payment confirm user {user_id}. Final Total: {final_total:.2f}, Balance: {user_balance:.2f}")
+
+        if user_balance >= final_total:
+            # Pay with balance
+            logger.info(f"Sufficient balance user {user_id}. Processing with balance.")
+            try:
+                if query.message: await query.edit_message_text("⏳ Processing payment with balance...", reply_markup=None, parse_mode=None)
+                else: await send_message_with_retry(context.bot, chat_id, "⏳ Processing payment with balance...", parse_mode=None)
+            except telegram_error.BadRequest: await query.answer("Processing...")
+
+            success = await process_purchase_with_balance(user_id, final_total, valid_basket_items_snapshot, discount_code_to_use, context)
+
+            if success:
+                try:
+                     if query.message: await query.edit_message_text("✅ Purchase successful! Details sent.", reply_markup=None, parse_mode=None)
+                except telegram_error.BadRequest: pass # Ignore edit error after success
+            else:
+                # Use await here as handle_view_basket is async
+                await user.handle_view_basket(update, context) # Refresh basket view on failure
+
+        else:
+            # Insufficient balance - Prompt to Refill
+            logger.info(f"Insufficient balance user {user_id}.")
+            needed_amount_str = format_currency(final_total)
+            balance_str = format_currency(user_balance)
+            insufficient_msg = lang_data.get("insufficient_balance", "⚠️ Insufficient Balance! Top up needed.")
+            top_up_button_text = lang_data.get("top_up_button", "Top Up")
+            back_basket_button_text = lang_data.get("back_basket_button", "Back to Basket")
+            full_msg = (f"{insufficient_msg}\n\nRequired: {needed_amount_str} EUR\nYour Balance: {balance_str} EUR")
+            keyboard = [
+                [InlineKeyboardButton(f"💸 {top_up_button_text}", callback_data="refill")],
+                [InlineKeyboardButton(f"⬅️ {back_basket_button_text}", callback_data="view_basket")]
+            ]
+            try: await query.edit_message_text(full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+            except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+        # --- END OF MOVED BLOCK ---
+
     except sqlite3.Error as e:
          logger.error(f"DB error during payment confirm user {user_id}: {e}", exc_info=True)
          kb = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
-         await query.edit_message_text("❌ Error calculating total/balance.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None); return
+         # Use try-except for edit_message_text inside except block
+         try: await query.edit_message_text("❌ Error calculating total/balance.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+         except Exception as edit_err: logger.error(f"Failed to edit message in sqlite error handler: {edit_err}")
+         return # Return after handling error
     except Exception as e:
          logger.error(f"Unexpected error prep payment confirm user {user_id}: {e}", exc_info=True)
          kb = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
+         # Use try-except for edit_message_text inside except block
          try: await query.edit_message_text("❌ Unexpected error.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-         except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id,"❌ Unexpected error.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-         return
-    finally:
-         if conn: conn.close()
-
-    # 4. Compare Balance and Proceed
-    logger.info(f"Payment confirm user {user_id}. Final Total: {final_total:.2f}, Balance: {user_balance:.2f}")
-
-    if user_balance >= final_total:
-        # Pay with balance
-        logger.info(f"Sufficient balance user {user_id}. Processing with balance.")
-        try:
-            if query.message: await query.edit_message_text("⏳ Processing payment with balance...", reply_markup=None, parse_mode=None)
-            else: await send_message_with_retry(context.bot, chat_id, "⏳ Processing payment with balance...", parse_mode=None)
-        except telegram_error.BadRequest: await query.answer("Processing...")
-
-        success = await process_purchase_with_balance(user_id, final_total, valid_basket_items_snapshot, discount_code_to_use, context)
-
-        if success:
-            try:
-                 if query.message: await query.edit_message_text("✅ Purchase successful! Details sent.", reply_markup=None, parse_mode=None)
-            except telegram_error.BadRequest: pass # Ignore edit error after success
-        else:
-            # Use await here as handle_view_basket is async
-            await user.handle_view_basket(update, context) # Refresh basket view on failure
-
-    else:
-        # Insufficient balance - Prompt to Refill
-        logger.info(f"Insufficient balance user {user_id}.")
-        needed_amount_str = format_currency(final_total)
-        balance_str = format_currency(user_balance)
-        insufficient_msg = lang_data.get("insufficient_balance", "⚠️ Insufficient Balance! Top up needed.")
-        top_up_button_text = lang_data.get("top_up_button", "Top Up")
-        back_basket_button_text = lang_data.get("back_basket_button", "Back to Basket")
-        full_msg = (f"{insufficient_msg}\n\nRequired: {needed_amount_str} EUR\nYour Balance: {balance_str} EUR")
-        keyboard = [
-            [InlineKeyboardButton(f"💸 {top_up_button_text}", callback_data="refill")],
-            [InlineKeyboardButton(f"⬅️ {back_basket_button_text}", callback_data="view_basket")]
-        ]
-        try: await query.edit_message_text(full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-        except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+         except Exception as edit_err: logger.error(f"Failed to edit message in exception handler: {edit_err}")
+         return # Return after handling error
+    finally: # <-- Should now be correctly aligned
+        if conn: conn.close() # <-- Indented under finally
 
 # --- END OF FILE payment.py ---
