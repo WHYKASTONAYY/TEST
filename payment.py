@@ -124,8 +124,6 @@ async def create_nowpayments_payment(user_id: int, target_eur_amount: Decimal, p
     invoice_crypto_amount = max(estimated_crypto_amount, min_amount_api)
     if invoice_crypto_amount > estimated_crypto_amount:
         logger.warning(f"Estimated amount {estimated_crypto_amount} was below NOWPayments minimum {min_amount_api}. Using minimum for invoice: {invoice_crypto_amount} {pay_currency_code}")
-        # Optional: Inform the user if the amount was adjusted significantly? Might be confusing.
-        # For now, just proceed with the higher amount.
 
     # 3. Prepare API Request Data for Payment Creation
     order_id = f"USER{user_id}_DEPOSIT_{int(time.time())}_{uuid.uuid4().hex[:6]}"
@@ -166,9 +164,7 @@ async def create_nowpayments_payment(user_id: int, target_eur_amount: Decimal, p
                  # This specific check might happen if min amount changed between estimate and payment
                  if status_code == 400 and "AMOUNT_MINIMAL_ERROR" in error_content:
                      logger.warning(f"NOWPayments rejected payment for {order_id} due to amount being too low (API check during payment creation).")
-                     # We already checked min amount, but API might have edge cases.
-                     # Return a specific error that can be shown to user.
-                     min_amount_fallback = f"{min_amount_api:.8f}".rstrip('0').rstrip('.') # Use the min amount we checked earlier
+                     min_amount_fallback = f"{min_amount_api:.8f}".rstrip('0').rstrip('.')
                      return {'error': 'amount_too_low_api', 'currency': pay_currency_code.upper(), 'min_amount': min_amount_fallback, 'crypto_amount': f"{invoice_crypto_amount:.8f}".rstrip('0').rstrip('.'), 'target_eur_amount': target_eur_amount}
                  return {'error': 'api_request_failed', 'details': str(e), 'status': status_code, 'content': error_content[:200]}
             except Exception as e:
@@ -181,7 +177,6 @@ async def create_nowpayments_payment(user_id: int, target_eur_amount: Decimal, p
              if payment_data['error'] == 'api_key_invalid': logger.critical("NOWPayments API Key seems invalid!")
              elif payment_data.get('internal'): logger.error("Internal error during API request (e.g., timeout).")
              elif payment_data['error'] == 'amount_too_low_api':
-                 # Pass this specific error back up
                  return payment_data
              else: logger.error(f"NOWPayments API returned error during payment creation: {payment_data}")
              return payment_data # Return other errors as well
@@ -192,29 +187,18 @@ async def create_nowpayments_payment(user_id: int, target_eur_amount: Decimal, p
              logger.error(f"Invalid response from NOWPayments payment API for order {order_id}: Missing keys. Response: {payment_data}")
              return {'error': 'invalid_api_response'}
 
-        # <<<--- CAPTURE the actual crypto amount requested by the invoice ---<<<
-        # This is the amount the user *should* send according to the invoice.
-        # Use the value from the response, as it's the definitive one.
         expected_crypto_amount_from_invoice = Decimal(str(payment_data['pay_amount']))
-
-        # Add original EUR target for display purposes later if needed
         payment_data['target_eur_amount_orig'] = float(target_eur_amount)
-        # Ensure pay_amount in the response dict is nicely formatted string if needed later
         payment_data['pay_amount'] = f"{expected_crypto_amount_from_invoice:.8f}".rstrip('0').rstrip('.')
 
-        # 6. Store Pending Deposit Info (passing the expected crypto amount)
+        # 6. Store Pending Deposit Info
         add_success = await asyncio.to_thread(
             add_pending_deposit,
-            payment_data['payment_id'],
-            user_id,
-            payment_data['pay_currency'],               # Use currency from response
-            float(target_eur_amount),                   # Store the original target EUR
-            float(expected_crypto_amount_from_invoice)  # <<< STORE the expected crypto amount
+            payment_data['payment_id'], user_id, payment_data['pay_currency'],
+            float(target_eur_amount), float(expected_crypto_amount_from_invoice)
         )
-
         if not add_success:
              logger.error(f"Failed to add pending deposit to DB for payment_id {payment_data['payment_id']} (user {user_id}).")
-             # Technically invoice created, but we can't track it. Critical error.
              return {'error': 'pending_db_error'}
 
         logger.info(f"Successfully created NOWPayments invoice {payment_data['payment_id']} for user {user_id}.")
@@ -404,7 +388,6 @@ Please send the following amount:
 
 
 # --- Process Successful Refill (Called by Webhook Handler) ---
-# (No changes needed here)
 async def process_successful_refill(user_id: int, amount_to_add_eur: Decimal, payment_id: str, context: ContextTypes.DEFAULT_TYPE) -> bool:
     bot = context.bot
     user_lang = 'en'
@@ -721,7 +704,7 @@ async def process_purchase_with_balance(user_id: int, amount_to_deduct: Decimal,
         return False
 
 
-# --- Confirm Pay Handler (Checks Balance, initiates balance payment or refill prompt) ---
+# --- Confirm Pay Handler (Simplified version without outer try/except/finally) ---
 async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE, params=None):
     """Handles the 'Pay Now' button press from the basket."""
     query = update.callback_query
@@ -739,23 +722,27 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
         await user.handle_view_basket(update, context) # Use await
         return
 
-    # --- Calculate Final Total (using Decimals) ---
+    # --- Variables to store results ---
     conn = None
     original_total = Decimal('0.0')
     final_total = Decimal('0.0')
     valid_basket_items_snapshot = []
     discount_code_to_use = None
-    user_balance = Decimal('0.0') # Initialize user_balance
+    user_balance = Decimal('0.0')
+    error_occurred = False # Flag
 
-    try: # <-- Start of the main try block
+    # --- Fetch data and calculate ---
+    try:
+        conn = get_db_connection()
+        c = conn.cursor()
+
         product_ids_in_basket = list(set(item['product_id'] for item in basket))
         if not product_ids_in_basket:
              await query.answer("Basket empty after validation.", show_alert=True)
              await user.handle_view_basket(update, context) # Use await
-             return # Added return
+             if conn: conn.close()
+             return
 
-        conn = get_db_connection()
-        c = conn.cursor()
         placeholders = ','.join('?' for _ in product_ids_in_basket)
         c.execute(f"SELECT id, price FROM products WHERE id IN ({placeholders})", product_ids_in_basket)
         prices_dict = {row['id']: Decimal(str(row['price'])) for row in c.fetchall()}
@@ -765,7 +752,7 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
              if prod_id in prices_dict:
                  original_total += prices_dict[prod_id]
                  item_snapshot = item.copy()
-                 item_snapshot['price_at_checkout'] = prices_dict[prod_id] # Store Decimal price
+                 item_snapshot['price_at_checkout'] = prices_dict[prod_id]
                  valid_basket_items_snapshot.append(item_snapshot)
              else: logger.warning(f"Product {prod_id} missing during payment confirm user {user_id}.")
 
@@ -776,16 +763,15 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
              keyboard_back = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
              try: await query.edit_message_text("❌ Error: All items unavailable.", reply_markup=InlineKeyboardMarkup(keyboard_back), parse_mode=None)
              except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, "❌ Error: All items unavailable.", reply_markup=InlineKeyboardMarkup(keyboard_back), parse_mode=None)
-             return # Return after handling the error message
+             if conn: conn.close()
+             return
 
         final_total = original_total
         if applied_discount_info:
-            # Sync call, pass float original total
             code_valid, _, discount_details = user.validate_discount_code(applied_discount_info['code'], float(original_total))
             if code_valid and discount_details:
-                final_total = Decimal(str(discount_details['final_total'])) # Convert back to Decimal
+                final_total = Decimal(str(discount_details['final_total']))
                 discount_code_to_use = applied_discount_info.get('code')
-                # Store final total as float in context for consistency if needed elsewhere
                 context.user_data['applied_discount']['final_total'] = float(final_total)
                 context.user_data['applied_discount']['amount'] = discount_details['discount_amount']
             else:
@@ -796,67 +782,62 @@ async def handle_confirm_pay(update: Update, context: ContextTypes.DEFAULT_TYPE,
 
         if final_total < Decimal('0.0'):
              await query.answer("Cannot process negative amount.", show_alert=True)
-             return # Return after handling the error message
+             if conn: conn.close()
+             return
 
-        # 3. Fetch User Balance
         c.execute("SELECT balance FROM users WHERE user_id = ?", (user_id,))
         balance_result = c.fetchone()
         user_balance = Decimal(str(balance_result['balance'])) if balance_result else Decimal('0.0')
 
-        # --- MOVED THIS BLOCK INSIDE TRY ---
-        # 4. Compare Balance and Proceed
-        logger.info(f"Payment confirm user {user_id}. Final Total: {final_total:.2f}, Balance: {user_balance:.2f}")
+    except (sqlite3.Error, Exception) as e: # Catch potential errors here
+        logger.error(f"Error during payment confirm data processing user {user_id}: {e}", exc_info=True)
+        error_occurred = True
+        kb = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
+        try: await query.edit_message_text("❌ Error preparing payment.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
+        except Exception as edit_err: logger.error(f"Failed to edit message in error handler: {edit_err}")
+    finally:
+        if conn:
+            conn.close() # Ensure connection is closed even on error during processing
+            logger.debug("DB connection closed in handle_confirm_pay.")
 
-        if user_balance >= final_total:
-            # Pay with balance
-            logger.info(f"Sufficient balance user {user_id}. Processing with balance.")
+    # --- Proceed only if no error occurred during data processing ---
+    if error_occurred:
+        return # Stop execution if an error happened
+
+    # --- Balance Comparison and Action Logic ---
+    logger.info(f"Payment confirm user {user_id}. Final Total: {final_total:.2f}, Balance: {user_balance:.2f}")
+
+    if user_balance >= final_total:
+        # Pay with balance
+        logger.info(f"Sufficient balance user {user_id}. Processing with balance.")
+        try:
+            if query.message: await query.edit_message_text("⏳ Processing payment with balance...", reply_markup=None, parse_mode=None)
+            else: await send_message_with_retry(context.bot, chat_id, "⏳ Processing payment with balance...", parse_mode=None)
+        except telegram_error.BadRequest: await query.answer("Processing...")
+
+        success = await process_purchase_with_balance(user_id, final_total, valid_basket_items_snapshot, discount_code_to_use, context)
+
+        if success:
             try:
-                if query.message: await query.edit_message_text("⏳ Processing payment with balance...", reply_markup=None, parse_mode=None)
-                else: await send_message_with_retry(context.bot, chat_id, "⏳ Processing payment with balance...", parse_mode=None)
-            except telegram_error.BadRequest: await query.answer("Processing...")
-
-            success = await process_purchase_with_balance(user_id, final_total, valid_basket_items_snapshot, discount_code_to_use, context)
-
-            if success:
-                try:
-                     if query.message: await query.edit_message_text("✅ Purchase successful! Details sent.", reply_markup=None, parse_mode=None)
-                except telegram_error.BadRequest: pass # Ignore edit error after success
-            else:
-                # Use await here as handle_view_basket is async
-                await user.handle_view_basket(update, context) # Refresh basket view on failure
-
+                 if query.message: await query.edit_message_text("✅ Purchase successful! Details sent.", reply_markup=None, parse_mode=None)
+            except telegram_error.BadRequest: pass # Ignore edit error after success
         else:
-            # Insufficient balance - Prompt to Refill
-            logger.info(f"Insufficient balance user {user_id}.")
-            needed_amount_str = format_currency(final_total)
-            balance_str = format_currency(user_balance)
-            insufficient_msg = lang_data.get("insufficient_balance", "⚠️ Insufficient Balance! Top up needed.")
-            top_up_button_text = lang_data.get("top_up_button", "Top Up")
-            back_basket_button_text = lang_data.get("back_basket_button", "Back to Basket")
-            full_msg = (f"{insufficient_msg}\n\nRequired: {needed_amount_str} EUR\nYour Balance: {balance_str} EUR")
-            keyboard = [
-                [InlineKeyboardButton(f"💸 {top_up_button_text}", callback_data="refill")],
-                [InlineKeyboardButton(f"⬅️ {back_basket_button_text}", callback_data="view_basket")]
-            ]
-            try: await query.edit_message_text(full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-            except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
-        # --- END OF MOVED BLOCK ---
+            await user.handle_view_basket(update, context) # Refresh basket view on failure
 
-    except sqlite3.Error as e:
-         logger.error(f"DB error during payment confirm user {user_id}: {e}", exc_info=True)
-         kb = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
-         # Use try-except for edit_message_text inside except block
-         try: await query.edit_message_text("❌ Error calculating total/balance.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-         except Exception as edit_err: logger.error(f"Failed to edit message in sqlite error handler: {edit_err}")
-         return # Return after handling error
-    except Exception as e:
-         logger.error(f"Unexpected error prep payment confirm user {user_id}: {e}", exc_info=True)
-         kb = [[InlineKeyboardButton("⬅️ Back", callback_data="view_basket")]]
-         # Use try-except for edit_message_text inside except block
-         try: await query.edit_message_text("❌ Unexpected error.", reply_markup=InlineKeyboardMarkup(kb), parse_mode=None)
-         except Exception as edit_err: logger.error(f"Failed to edit message in exception handler: {edit_err}")
-         return # Return after handling error
-    finally: # <-- Should now be correctly aligned
-        if conn: conn.close() # <-- Indented under finally
+    else:
+        # Insufficient balance - Prompt to Refill
+        logger.info(f"Insufficient balance user {user_id}.")
+        needed_amount_str = format_currency(final_total)
+        balance_str = format_currency(user_balance)
+        insufficient_msg = lang_data.get("insufficient_balance", "⚠️ Insufficient Balance! Top up needed.")
+        top_up_button_text = lang_data.get("top_up_button", "Top Up")
+        back_basket_button_text = lang_data.get("back_basket_button", "Back to Basket")
+        full_msg = (f"{insufficient_msg}\n\nRequired: {needed_amount_str} EUR\nYour Balance: {balance_str} EUR")
+        keyboard = [
+            [InlineKeyboardButton(f"💸 {top_up_button_text}", callback_data="refill")],
+            [InlineKeyboardButton(f"⬅️ {back_basket_button_text}", callback_data="view_basket")]
+        ]
+        try: await query.edit_message_text(full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
+        except telegram_error.BadRequest: await send_message_with_retry(context.bot, chat_id, full_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=None)
 
 # --- END OF FILE payment.py ---
